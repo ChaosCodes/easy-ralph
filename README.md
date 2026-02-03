@@ -1,54 +1,67 @@
-# Ralph SDK
+# Easy Ralph
 
-基于 Claude Agent SDK 的自主 AI agent 循环，将 PRD 生成和任务执行整合到统一流程中。
+An autonomous AI agent that turns natural language requirements into working code through a three-phase pipeline.
 
-## 安装
+Built on top of [Claude Code SDK](https://github.com/anthropics/claude-code), Easy Ralph automates the entire software development workflow: from requirements clarification to PRD generation to iterative code implementation.
+
+## Features
+
+- **Autonomous Execution** - Minimal human intervention required
+- **Three-Phase Pipeline** - Clarify → Plan → Execute
+- **Progress Tracking** - Resume from where you left off
+- **Learning Accumulation** - Each iteration builds on previous learnings
+- **Real-time Visualization** - See exactly what the agent is doing
+
+## Installation
 
 ```bash
-cd ralph-sdk
+# Install Claude Code CLI first
+npm install -g @anthropic-ai/claude-code
+
+# Install Easy Ralph
+pip install git+https://github.com/ChaosCodes/easy-ralph.git
+
+# Or install from source
+git clone https://github.com/ChaosCodes/easy-ralph.git
+cd easy-ralph
 pip install -e .
 ```
 
-需要先安装 Claude Code CLI：
-```bash
-npm install -g @anthropic-ai/claude-code
-```
-
-## 使用
-
-### 完整流程（推荐）
-
-一条命令完成：需求澄清 → PRD 生成 → 自动执行
+## Quick Start
 
 ```bash
-ralph-sdk run "添加用户认证功能"
-```
+# Full pipeline: clarify → plan → execute
+ralph-sdk run "Add user authentication with JWT"
 
-### 分步骤
-
-```bash
-# 只生成 PRD（不执行）
-ralph-sdk plan "添加任务优先级功能" -o prd.json
-
-# 从现有 PRD 执行
-ralph-sdk execute prd.json --max 20
-
-# 查看进度
-ralph-sdk status
-
-# 重置某个 story 重新执行
-ralph-sdk reset --story US-003
-```
-
-### 快速模式
-
-跳过需求澄清阶段（适用于需求已经很明确的情况）：
-
-```bash
+# Quick mode (skip clarification)
 ralph-sdk run "Fix the bug in auth.py" --quick
 ```
 
-## 编程使用
+## Usage
+
+### CLI Commands
+
+```bash
+# Full pipeline
+ralph-sdk run "Add a todo list feature" --max 20
+
+# Plan only (generate PRD without executing)
+ralph-sdk plan "Add task priority feature" -o prd.json
+
+# Execute from existing PRD
+ralph-sdk execute prd.json --max 20
+
+# Check progress
+ralph-sdk status
+
+# Reset a story to re-execute
+ralph-sdk reset --story US-003
+
+# Reset all stories
+ralph-sdk reset --all
+```
+
+### Programmatic API
 
 ```python
 import asyncio
@@ -56,97 +69,152 @@ from ralph_sdk import run_ralph
 
 async def main():
     success = await run_ralph(
-        initial_prompt="Add a todo list feature",
+        initial_prompt="Add a search feature",
         cwd="./my-project",
         max_iterations=10,
+        skip_clarify=False,  # Set True to skip clarification
     )
     print(f"Completed: {success}")
 
 asyncio.run(main())
 ```
 
-## 工作流程
+## How It Works
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        ralph-sdk run                         │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                     ralph-sdk run "prompt"                      │
+└─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Phase 1: Requirements Clarification                        │
-│  - Analyze initial request                                  │
-│  - Generate clarifying questions                            │
-│  - Collect user answers                                     │
-│  - Produce clarified requirements                           │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 1: Requirements Clarification                            │
+│  ─────────────────────────────────────                          │
+│  • Generate 3-5 clarifying questions                            │
+│  • Collect user answers interactively                           │
+│  • Produce structured requirements (scope, goals, non-goals)    │
+└─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Phase 2: PRD Generation                                    │
-│  - Explore codebase for patterns                            │
-│  - Generate structured PRD                                  │
-│  - Decompose into right-sized user stories                  │
-│  - Save to prd.json                                         │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 2: PRD Generation                                        │
+│  ───────────────────────                                        │
+│  • Explore codebase for patterns and conventions                │
+│  • Generate structured PRD with user stories                    │
+│  • Decompose into right-sized tasks (one context window each)   │
+│  • Order by dependencies (schema → backend → UI)                │
+└─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Phase 3: Story Execution Loop                              │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │  For each story (by priority):                         │ │
-│  │  1. Load progress context                              │ │
-│  │  2. Execute story (fresh context each time)            │ │
-│  │  3. Run quality checks                                 │ │
-│  │  4. Commit if passed                                   │ │
-│  │  5. Update prd.json and progress.txt                   │ │
-│  │  6. Extract learnings for next iteration               │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                              │                              │
-│                              ▼                              │
-│                    All stories done?                        │
-│                     /            \                          │
-│                   Yes             No                        │
-│                    │               │                        │
-│                    ▼               └──────────┐             │
-│               [COMPLETE]                      │             │
-│                                               ▼             │
-│                                    Max iterations?          │
-│                                     /            \          │
-│                                   Yes             No        │
-│                                    │               │        │
-│                                    ▼               │        │
-│                               [TIMEOUT]      [NEXT STORY]   │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 3: Story Execution Loop                                  │
+│  ────────────────────────────                                   │
+│  For each user story (by priority):                             │
+│    1. Load progress context from previous iterations            │
+│    2. Execute with fresh Claude Code session                    │
+│    3. Run quality checks (typecheck, lint, tests)               │
+│    4. Commit changes if all checks pass                         │
+│    5. Extract learnings for next iteration                      │
+│    6. Update prd.json and progress.txt                          │
+│                                                                 │
+│  Continue until: all stories done OR max iterations reached     │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## 文件结构
+## Output Example
+
+```
+╭────────────────────── 🚀 Executing Story ──────────────────────╮
+│ US-001 Set up project structure with dependencies              │
+│                                                                │
+│ As a developer, I want a proper project structure...           │
+╰────────────────────────────────────────────────────────────────╯
+
+[ 1] 🔍 Glob **/*.py
+[ 2] 📖 Read pyproject.toml
+[ 3] 📖 Read src/main.py
+     💭 I'll set up the project structure...
+[ 4] ✏️  Edit pyproject.toml -1 +5
+[ 5] 💻 Bash  pip install -e .
+[ 6] 💻 Bash  python -c "import myproject"
+
+╭─────────────────────── US-001 ─────────────────────────────────╮
+│ ✓ Success  6 turns, 6 tool calls                               │
+│ Files: pyproject.toml, src/__init__.py                         │
+│ Commit: abc1234                                                │
+│ Learnings:                                                     │
+│   • This project uses pytest for testing                       │
+╰────────────────────────────────────────────────────────────────╯
+```
+
+## Project Structure
 
 ```
 ralph_sdk/
-├── __init__.py         # 公开接口
-├── models.py           # 数据模型 (PRD, UserStory, etc.)
-├── prompts.py          # System prompts
-├── clarifier.py        # 需求澄清模块
-├── prd_generator.py    # PRD 生成模块
-├── executor.py         # Story 执行模块
-├── progress.py         # 进度跟踪
-├── orchestrator.py     # 主流程编排
-└── cli.py              # 命令行入口
+├── __init__.py         # Public API
+├── models.py           # Data models (PRD, UserStory, StoryResult, etc.)
+├── prompts.py          # System prompts for each phase
+├── clarifier.py        # Phase 1: Requirements clarification
+├── prd_generator.py    # Phase 2: PRD generation
+├── executor.py         # Phase 3: Story execution
+├── progress.py         # Progress tracking and learning accumulation
+├── orchestrator.py     # Main pipeline orchestration
+└── cli.py              # CLI entry point
 ```
 
-## 与原版 Ralph 对比
+## Configuration
 
-| 特性 | 原版 Ralph | Ralph SDK |
-|------|-----------|-----------|
-| PRD 生成 | 手动触发 skill | 自动集成 |
-| JSON 转换 | 手动触发 skill | 自动完成 |
-| 执行循环 | Bash 脚本 | Python 代码 |
-| 上下文隔离 | 每次启动新进程 | 每次新 query() |
-| 进度持久化 | 文件 | 文件 + 内存 |
-| 自定义逻辑 | 修改 bash/prompt | 修改 Python |
-| 失败处理 | 继续下一轮 | 可配置重试 |
+Easy Ralph creates two files in your project directory:
+
+- **`prd.json`** - The generated PRD with user stories and their completion status
+- **`progress.txt`** - Execution log with accumulated learnings
+
+These files enable:
+- Resuming interrupted executions
+- Tracking what has been done
+- Passing learnings between iterations
+
+## Requirements
+
+- Python 3.10+
+- [Claude Code CLI](https://github.com/anthropics/claude-code) installed and authenticated
+- Anthropic API key (set via `ANTHROPIC_API_KEY` environment variable)
 
 ## License
 
 MIT
+
+---
+
+# 中文说明
+
+Easy Ralph 是一个自主 AI 代理，通过三阶段流水线将自然语言需求转化为可运行的代码。
+
+## 三阶段流程
+
+1. **需求澄清** - 生成澄清问题，收集用户回答，生成结构化需求
+2. **PRD 生成** - 探索代码库，生成用户故事，按依赖排序
+3. **故事执行** - 迭代执行每个故事，运行质量检查，提交代码
+
+## 快速使用
+
+```bash
+# 安装
+pip install git+https://github.com/ChaosCodes/easy-ralph.git
+
+# 运行
+ralph-sdk run "添加用户认证功能"
+
+# 快速模式（跳过澄清）
+ralph-sdk run "修复 auth.py 中的 bug" --quick
+
+# 从现有 PRD 继续执行
+ralph-sdk execute prd.json
+```
+
+## 特点
+
+- 自主执行，最小化人工干预
+- 支持断点续跑
+- 迭代间学习积累
+- 实时可视化执行过程
