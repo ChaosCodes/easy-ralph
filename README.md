@@ -2,7 +2,7 @@
 
 An autonomous AI agent that turns natural language requirements into working code through a three-phase pipeline.
 
-Built on top of [Claude Code SDK](https://github.com/anthropics/claude-code), Easy Ralph automates the entire software development workflow: from requirements clarification to PRD generation to iterative code implementation.
+Built on top of [Claude Code SDK](https://github.com/anthropics/claude-code-sdk-python), Easy Ralph automates the entire software development workflow: from requirements clarification to PRD generation to iterative code implementation.
 
 ## Features
 
@@ -36,7 +36,7 @@ claude
 export ANTHROPIC_API_KEY="your-key"
 ```
 
-> **Note**: The [claude-code-sdk](https://github.com/anthropics/claude-agent-sdk-python) bundles Claude Code CLI automatically.
+> **Note**: The [claude-code-sdk](https://github.com/anthropics/claude-code-sdk-python) bundles Claude Code CLI automatically.
 > If you prefer a system-wide installation: `curl -fsSL https://claude.ai/install.sh | bash`
 
 ## Quick Start
