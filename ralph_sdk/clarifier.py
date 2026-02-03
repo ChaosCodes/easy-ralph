@@ -1,17 +1,24 @@
 """Requirements clarification module."""
 
-import asyncio
-from claude_code_sdk import query, ClaudeCodeOptions, AssistantMessage
+from claude_code_sdk import AssistantMessage, ClaudeCodeOptions, query
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Prompt
+
 from ralph_sdk.models import ClarifiedRequirements
 from ralph_sdk.prompts import CLARIFIER_SYSTEM_PROMPT
-from rich.console import Console
-from rich.prompt import Prompt
-from rich.panel import Panel
 
 console = Console()
 
+# Mapping of prefixes to result fields
+_SUMMARY_FIELDS = {
+    "PROJECT:": "project_name",
+    "DESCRIPTION:": "final_description",
+    "SCOPE:": "scope",
+}
 
-async def clarify_requirements(initial_prompt: str) -> ClarifiedRequirements:
+
+async def clarify_requirements(initial_prompt: str, cwd: str = ".") -> ClarifiedRequirements:
     """
     Clarify requirements through interactive Q&A with the user.
 
@@ -31,7 +38,12 @@ async def clarify_requirements(initial_prompt: str) -> ClarifiedRequirements:
     questions_prompt = f"""User's feature request:
 {initial_prompt}
 
-Generate 3-5 clarifying questions with lettered options to better understand the requirements.
+First, explore the codebase to understand:
+1. Project structure and tech stack
+2. Existing patterns and conventions
+3. Related existing functionality
+
+Then generate 3-5 clarifying questions with lettered options to better understand the requirements.
 Focus on scope, target users, core functionality, and success criteria.
 """
 
@@ -40,7 +52,12 @@ Focus on scope, target users, core functionality, and success criteria.
         prompt=questions_prompt,
         options=ClaudeCodeOptions(
             system_prompt=CLARIFIER_SYSTEM_PROMPT,
-            max_turns=1,
+            allowed_tools=[
+                "Read", "Glob", "Grep", "LSP",  # Explore codebase
+                "WebFetch", "WebSearch",         # Research best practices & docs
+            ],
+            max_turns=8,  # Allow exploration + research before generating questions
+            cwd=cwd,
         ),
     ):
         if isinstance(message, AssistantMessage):
@@ -88,7 +105,12 @@ NON-GOALS: [comma-separated list of what's not included]
         prompt=summary_prompt,
         options=ClaudeCodeOptions(
             system_prompt=CLARIFIER_SYSTEM_PROMPT,
-            max_turns=1,
+            allowed_tools=[
+                "Read", "Glob", "Grep",      # Check codebase for scope
+                "WebFetch", "WebSearch",     # Verify technical feasibility
+            ],
+            max_turns=5,
+            cwd=cwd,
         ),
     ):
         if isinstance(message, AssistantMessage):
@@ -97,17 +119,7 @@ NON-GOALS: [comma-separated list of what's not included]
                     summary_text += block.text
 
     # Parse the summary
-    for line in summary_text.split("\n"):
-        line = line.strip()
-        if line.startswith("PROJECT:"):
-            result.project_name = line.replace("PROJECT:", "").strip()
-        elif line.startswith("DESCRIPTION:"):
-            result.final_description = line.replace("DESCRIPTION:", "").strip()
-        elif line.startswith("SCOPE:"):
-            result.scope = line.replace("SCOPE:", "").strip()
-        elif line.startswith("NON-GOALS:"):
-            non_goals = line.replace("NON-GOALS:", "").strip()
-            result.non_goals = [g.strip() for g in non_goals.split(",") if g.strip()]
+    _parse_summary_into_result(summary_text, result)
 
     # If parsing failed, use the raw summary
     if not result.final_description:
@@ -136,13 +148,29 @@ async def quick_clarify(initial_prompt: str) -> ClarifiedRequirements:
     Quick clarification without interactive Q&A.
     Useful for simple, well-defined requests.
     """
-    result = ClarifiedRequirements(
+    # Extract project name from first 3 alphanumeric words
+    words = [w for w in initial_prompt.split()[:3] if w.isalnum()]
+    project_name = "".join(w.capitalize() for w in words)
+
+    return ClarifiedRequirements(
         original_prompt=initial_prompt,
         final_description=initial_prompt,
+        project_name=project_name,
     )
 
-    # Extract project name from prompt
-    words = initial_prompt.split()[:3]
-    result.project_name = "".join(w.capitalize() for w in words if w.isalnum())
 
-    return result
+def _parse_summary_into_result(summary_text: str, result: ClarifiedRequirements) -> None:
+    """Parse summary text and populate result fields."""
+    for line in summary_text.split("\n"):
+        line = line.strip()
+
+        # Handle simple fields
+        for prefix, field in _SUMMARY_FIELDS.items():
+            if line.startswith(prefix):
+                setattr(result, field, line[len(prefix):].strip())
+                break
+
+        # Handle non-goals separately (needs list parsing)
+        if line.startswith("NON-GOALS:"):
+            value = line[len("NON-GOALS:"):].strip()
+            result.non_goals = [g.strip() for g in value.split(",") if g.strip()]

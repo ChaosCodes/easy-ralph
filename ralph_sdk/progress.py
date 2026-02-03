@@ -2,10 +2,34 @@
 
 import os
 from datetime import datetime
-from ralph_sdk.models import ProgressEntry, StoryResult
+
 from rich.console import Console
 
+from ralph_sdk.models import ProgressEntry, StoryResult
+
 console = Console()
+
+# Keywords that suggest a reusable pattern
+_PATTERN_KEYWORDS = [
+    "always", "never", "must", "pattern", "convention", "use", "don't",
+    "remember", "ensure", "make sure", "important", "note:", "gotcha",
+]
+
+# Keywords that suggest story-specific content (filter these out)
+_STORY_SPECIFIC_KEYWORDS = ["us-", "story", "this task", "this story", "for this"]
+
+# Prefixes to remove from normalized patterns
+_PATTERN_PREFIXES = ["Pattern:", "Pattern discovered:", "Gotcha:", "Note:"]
+
+
+def _categorize_learning(learning: str) -> str:
+    """Categorize a learning for display purposes."""
+    lower = learning.lower()
+    if any(kw in lower for kw in ["pattern", "convention", "use"]):
+        return "Pattern"
+    if any(kw in lower for kw in ["gotcha", "don't", "never", "remember"]):
+        return "Gotcha"
+    return "Context"
 
 
 class ProgressTracker:
@@ -96,9 +120,10 @@ class ProgressTracker:
                 lines.append("")
 
             if entry.learnings:
-                lines.append("**Learnings:**")
-                for l in entry.learnings:
-                    lines.append(f"- {l}")
+                lines.append("**Learnings for future iterations:**")
+                for learning in entry.learnings:
+                    category = _categorize_learning(learning)
+                    lines.append(f"- {category}: {learning}")
                 lines.append("")
 
             lines.append("---")
@@ -112,26 +137,36 @@ class ProgressTracker:
     def consolidate_patterns(self, new_learnings: list[str]) -> None:
         """
         Extract reusable patterns from learnings.
-        This is a simple heuristic - could be enhanced with LLM.
+
+        Patterns should be general and reusable (not story-specific),
+        providing actionable guidance about codebase conventions, gotchas,
+        or best practices for future iterations.
         """
-        pattern_keywords = [
-            "always",
-            "never",
-            "must",
-            "pattern",
-            "convention",
-            "use",
-            "don't",
-            "remember",
-        ]
+        existing_lower = {p.lower() for p in self.patterns}
 
         for learning in new_learnings:
             learning_lower = learning.lower()
-            if any(kw in learning_lower for kw in pattern_keywords):
-                # This looks like a pattern
-                if learning not in self.patterns:
-                    self.patterns.append(learning)
-                    console.print(f"[cyan]New pattern:[/cyan] {learning}")
+
+            # Skip story-specific learnings
+            if any(kw in learning_lower for kw in _STORY_SPECIFIC_KEYWORDS):
+                continue
+
+            # Check if it looks like a reusable pattern
+            if not any(kw in learning_lower for kw in _PATTERN_KEYWORDS):
+                continue
+
+            # Normalize the pattern (remove leading prefixes)
+            normalized = learning.strip()
+            for prefix in _PATTERN_PREFIXES:
+                if normalized.startswith(prefix):
+                    normalized = normalized[len(prefix):].strip()
+                    break
+
+            # Add if not a duplicate (case-insensitive)
+            if normalized.lower() not in existing_lower:
+                self.patterns.append(normalized)
+                existing_lower.add(normalized.lower())
+                console.print(f"[cyan]New pattern:[/cyan] {normalized}")
 
 
 def init_progress_file(filepath: str) -> None:

@@ -2,14 +2,42 @@
 
 import json
 import re
-from claude_code_sdk import query, ClaudeCodeOptions, AssistantMessage
-from ralph_sdk.models import PRD, UserStory, ClarifiedRequirements
-from ralph_sdk.prompts import PRD_GENERATOR_SYSTEM_PROMPT
+
+from claude_code_sdk import AssistantMessage, ClaudeCodeOptions, query
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from ralph_sdk.models import ClarifiedRequirements, PRD, UserStory
+from ralph_sdk.prompts import PRD_GENERATOR_SYSTEM_PROMPT
+
 console = Console()
+
+
+def _story_from_dict(data: dict, index: int = 0) -> UserStory:
+    """Create a UserStory from a dictionary."""
+    return UserStory(
+        id=data.get("id", f"US-{index + 1:03d}"),
+        title=data.get("title", ""),
+        description=data.get("description", ""),
+        acceptance_criteria=data.get("acceptanceCriteria", []),
+        priority=data.get("priority", index + 1),
+        passes=data.get("passes", False),
+        notes=data.get("notes", ""),
+    )
+
+
+def _story_to_dict(story: UserStory) -> dict:
+    """Convert a UserStory to a dictionary."""
+    return {
+        "id": story.id,
+        "title": story.title,
+        "description": story.description,
+        "acceptanceCriteria": story.acceptance_criteria,
+        "priority": story.priority,
+        "passes": story.passes,
+        "notes": story.notes,
+    }
 
 
 def to_kebab_case(text: str) -> str:
@@ -60,7 +88,7 @@ Output ONLY valid JSON.
         prompt=prompt,
         options=ClaudeCodeOptions(
             system_prompt=PRD_GENERATOR_SYSTEM_PROMPT,
-            allowed_tools=["Read", "Glob", "Grep"],
+            allowed_tools=["Read", "Glob", "Grep", "LSP"],  # LSP helps understand code structure
             max_turns=10,
             cwd=cwd,
         ),
@@ -77,24 +105,17 @@ Output ONLY valid JSON.
         raise ValueError(f"Failed to parse PRD JSON from response:\n{prd_json[:500]}")
 
     # Convert to PRD model
+    default_branch = f"ralph/{to_kebab_case(requirements.project_name or 'feature')}"
+    stories = [
+        _story_from_dict(s, i)
+        for i, s in enumerate(prd_data.get("userStories", []))
+    ]
+
     prd = PRD(
         project=prd_data.get("project", requirements.project_name or "MyProject"),
-        branch_name=prd_data.get(
-            "branchName", f"ralph/{to_kebab_case(requirements.project_name or 'feature')}"
-        ),
+        branch_name=prd_data.get("branchName", default_branch),
         description=prd_data.get("description", requirements.final_description),
-        user_stories=[
-            UserStory(
-                id=s.get("id", f"US-{i+1:03d}"),
-                title=s.get("title", ""),
-                description=s.get("description", ""),
-                acceptance_criteria=s.get("acceptanceCriteria", []),
-                priority=s.get("priority", i + 1),
-                passes=s.get("passes", False),
-                notes=s.get("notes", ""),
-            )
-            for i, s in enumerate(prd_data.get("userStories", []))
-        ],
+        user_stories=stories,
     )
 
     # Display PRD summary
@@ -105,23 +126,21 @@ Output ONLY valid JSON.
 
 def extract_json(text: str) -> dict | None:
     """Extract JSON object from text that may contain other content."""
-    # Try to find JSON in code blocks first
-    code_block_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
-    if code_block_match:
-        try:
-            return json.loads(code_block_match.group(1))
-        except json.JSONDecodeError:
-            pass
+    # Try different patterns to find JSON
+    patterns = [
+        r"```(?:json)?\s*(\{[\s\S]*?\})\s*```",  # JSON in code blocks
+        r"(\{[\s\S]*\})",  # Raw JSON object
+    ]
 
-    # Try to find raw JSON object
-    json_match = re.search(r"\{[\s\S]*\}", text)
-    if json_match:
-        try:
-            return json.loads(json_match.group(0))
-        except json.JSONDecodeError:
-            pass
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except json.JSONDecodeError:
+                continue
 
-    # Try the whole text
+    # Try the whole text as a last resort
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -160,18 +179,7 @@ def save_prd(prd: PRD, filepath: str) -> None:
         "project": prd.project,
         "branchName": prd.branch_name,
         "description": prd.description,
-        "userStories": [
-            {
-                "id": s.id,
-                "title": s.title,
-                "description": s.description,
-                "acceptanceCriteria": s.acceptance_criteria,
-                "priority": s.priority,
-                "passes": s.passes,
-                "notes": s.notes,
-            }
-            for s in prd.user_stories
-        ],
+        "userStories": [_story_to_dict(s) for s in prd.user_stories],
     }
     with open(filepath, "w") as f:
         json.dump(data, f, indent=2)
@@ -183,20 +191,14 @@ def load_prd(filepath: str) -> PRD:
     with open(filepath) as f:
         data = json.load(f)
 
+    stories = [
+        _story_from_dict(s, i)
+        for i, s in enumerate(data.get("userStories", []))
+    ]
+
     return PRD(
         project=data.get("project", ""),
         branch_name=data.get("branchName", ""),
         description=data.get("description", ""),
-        user_stories=[
-            UserStory(
-                id=s.get("id", ""),
-                title=s.get("title", ""),
-                description=s.get("description", ""),
-                acceptance_criteria=s.get("acceptanceCriteria", []),
-                priority=s.get("priority", 0),
-                passes=s.get("passes", False),
-                notes=s.get("notes", ""),
-            )
-            for s in data.get("userStories", [])
-        ],
+        user_stories=stories,
     )

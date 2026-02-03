@@ -3,13 +3,30 @@
 import json
 import os
 import re
-from claude_code_sdk import query, ClaudeCodeOptions, AssistantMessage
-from ralph_sdk.models import UserStory, StoryResult, ExecutionContext
-from ralph_sdk.prompts import EXECUTOR_SYSTEM_PROMPT
+
+from claude_code_sdk import AssistantMessage, ClaudeCodeOptions, query
 from rich.console import Console
 from rich.panel import Panel
 
+from ralph_sdk.models import ExecutionContext, StoryResult, UserStory
+from ralph_sdk.prompts import EXECUTOR_SYSTEM_PROMPT
+
 console = Console()
+
+# Tool icons for display
+_TOOL_ICONS = {
+    "Read": "R",
+    "Write": "W",
+    "Edit": "E",
+    "Bash": "$",
+    "Glob": "G",
+    "Grep": "?",
+    "Task": "T",
+    "LSP": "L",
+    "WebFetch": "F",
+    "WebSearch": "S",
+    "NotebookEdit": "N",
+}
 
 
 def shorten_path(path: str, cwd: str = "") -> str:
@@ -25,55 +42,68 @@ def shorten_path(path: str, cwd: str = "") -> str:
 
 def format_tool_line(tool_name: str, tool_input: dict, cwd: str = "") -> str:
     """Format a tool use as a single compact line with rich highlighting."""
-    icons = {
-        "Read": "📖",
-        "Write": "✍️ ",
-        "Edit": "✏️ ",
-        "Bash": "💻",
-        "Glob": "🔍",
-        "Grep": "🔎",
-    }
-    icon = icons.get(tool_name, "🔧")
+    icon = _TOOL_ICONS.get(tool_name, "?")
+    prefix = f"[{icon}]"
 
     if tool_name == "Read":
-        path = shorten_path(tool_input.get('file_path', '?'), cwd)
-        return f"{icon} [bold cyan]Read[/bold cyan] [bright_white]{path}[/bright_white]"
+        path = shorten_path(tool_input.get("file_path", "?"), cwd)
+        return f"{prefix} [bold cyan]Read[/bold cyan] {path}"
 
-    elif tool_name == "Write":
-        path = shorten_path(tool_input.get('file_path', '?'), cwd)
-        content = tool_input.get('content', '')
-        lines = len(content.split('\n'))
-        return f"{icon} [bold green]Write[/bold green] [bright_white]{path}[/bright_white] [dim]({lines} lines)[/dim]"
+    if tool_name == "Write":
+        path = shorten_path(tool_input.get("file_path", "?"), cwd)
+        lines = len(tool_input.get("content", "").split("\n"))
+        return f"{prefix} [bold green]Write[/bold green] {path} [dim]({lines} lines)[/dim]"
 
-    elif tool_name == "Edit":
-        path = shorten_path(tool_input.get('file_path', '?'), cwd)
-        old = tool_input.get('old_string', '')
-        new = tool_input.get('new_string', '')
-        old_lines = len(old.split('\n'))
-        new_lines = len(new.split('\n'))
-        return f"{icon} [bold yellow]Edit[/bold yellow] [bright_white]{path}[/bright_white] [red]-{old_lines}[/red] [green]+{new_lines}[/green]"
+    if tool_name == "Edit":
+        path = shorten_path(tool_input.get("file_path", "?"), cwd)
+        old_lines = len(tool_input.get("old_string", "").split("\n"))
+        new_lines = len(tool_input.get("new_string", "").split("\n"))
+        return f"{prefix} [bold yellow]Edit[/bold yellow] {path} [red]-{old_lines}[/red] [green]+{new_lines}[/green]"
 
-    elif tool_name == "Bash":
-        cmd = tool_input.get('command', '?')
-        # Truncate long commands
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "?")
         if len(cmd) > 60:
             cmd = cmd[:57] + "..."
-        return f"{icon} [bold magenta]Bash[/bold magenta] [bright_black on bright_white] {cmd} [/bright_black on bright_white]"
+        return f"{prefix} [bold magenta]Bash[/bold magenta] {cmd}"
 
-    elif tool_name == "Glob":
-        pattern = tool_input.get('pattern', '?')
-        path = tool_input.get('path', '')
-        if path:
-            return f"{icon} [bold blue]Glob[/bold blue] [bright_yellow]{pattern}[/bright_yellow] [dim]in {shorten_path(path, cwd)}[/dim]"
-        return f"{icon} [bold blue]Glob[/bold blue] [bright_yellow]{pattern}[/bright_yellow]"
+    if tool_name == "Glob":
+        pattern = tool_input.get("pattern", "?")
+        path = tool_input.get("path", "")
+        suffix = f" [dim]in {shorten_path(path, cwd)}[/dim]" if path else ""
+        return f"{prefix} [bold blue]Glob[/bold blue] {pattern}{suffix}"
 
-    elif tool_name == "Grep":
-        pattern = tool_input.get('pattern', '?')
-        path = shorten_path(tool_input.get('path', '.'), cwd)
-        return f"{icon} [bold blue]Grep[/bold blue] [bright_yellow]'{pattern}'[/bright_yellow] [dim]in {path}[/dim]"
+    if tool_name == "Grep":
+        pattern = tool_input.get("pattern", "?")
+        path = shorten_path(tool_input.get("path", "."), cwd)
+        return f"{prefix} [bold blue]Grep[/bold blue] '{pattern}' [dim]in {path}[/dim]"
 
-    else:
-        return f"{icon} [bold]{tool_name}[/bold]"
+    if tool_name == "Task":
+        desc = tool_input.get("description", "?")
+        subagent = tool_input.get("subagent_type", "")
+        return f"{prefix} [bold cyan]Task[/bold cyan] {desc} [dim]({subagent})[/dim]"
+
+    if tool_name == "LSP":
+        op = tool_input.get("operation", "?")
+        path = shorten_path(tool_input.get("filePath", "?"), cwd)
+        line = tool_input.get("line", "?")
+        return f"{prefix} [bold green]LSP[/bold green] {op} {path}:{line}"
+
+    if tool_name == "WebFetch":
+        url = tool_input.get("url", "?")
+        if len(url) > 50:
+            url = url[:47] + "..."
+        return f"{prefix} [bold blue]WebFetch[/bold blue] {url}"
+
+    if tool_name == "WebSearch":
+        q = tool_input.get("query", "?")
+        return f"{prefix} [bold blue]WebSearch[/bold blue] '{q}'"
+
+    if tool_name == "NotebookEdit":
+        path = shorten_path(tool_input.get("notebook_path", "?"), cwd)
+        edit_mode = tool_input.get("edit_mode", "replace")
+        return f"{prefix} [bold purple]NotebookEdit[/bold purple] {path} [dim]({edit_mode})[/dim]"
+
+    return f"{prefix} [bold]{tool_name}[/bold]"
 
 
 async def execute_story(
@@ -144,12 +174,22 @@ Begin implementation.
         options=ClaudeCodeOptions(
             system_prompt=system_prompt,
             allowed_tools=[
+                # File operations
                 "Read",
                 "Write",
                 "Edit",
-                "Bash",
                 "Glob",
                 "Grep",
+                # Execution
+                "Bash",
+                # Code intelligence
+                "LSP",          # Go to definition, find references, etc.
+                "Task",         # Spawn sub-agents for complex exploration
+                # Web access
+                "WebFetch",     # Fetch external documentation
+                "WebSearch",    # Search for solutions
+                # Notebook support
+                "NotebookEdit", # Edit Jupyter notebooks if needed
             ],
             permission_mode="acceptEdits",
             max_turns=50,
@@ -179,41 +219,60 @@ Begin implementation.
                     tool_line = format_tool_line(block.name, block.input, context.cwd)
                     console.print(f"[bright_black][{tool_count:2d}][/bright_black] {tool_line}")
 
-    # Parse the result
+    # Parse and display the result
     result = parse_execution_result(story.id, result_text)
-
-    # Display result summary
     console.print()
+    _display_result(result, story.id, turn_count, tool_count, context.cwd)
+
+    return result
+
+
+def _display_result(
+    result: StoryResult, story_id: str, turn_count: int, tool_count: int, cwd: str
+) -> None:
+    """Display the execution result summary."""
     stats = f"[bright_black]{turn_count} turns, {tool_count} tool calls[/bright_black]"
 
     if result.success:
-        files_str = ", ".join(f"[bright_white]{shorten_path(f, context.cwd)}[/bright_white]" for f in result.files_changed) if result.files_changed else "[dim]None[/dim]"
-        content = f"[bold bright_green]✓ Success[/bold bright_green]  {stats}\n"
-        content += f"[bright_black]Files:[/bright_black] {files_str}\n"
+        files_display = _format_files_list(result.files_changed, cwd)
+        content = f"[bold bright_green]Success[/bold bright_green]  {stats}\n"
+        content += f"[bright_black]Files:[/bright_black] {files_display}\n"
         if result.commit_hash:
             content += f"[bright_black]Commit:[/bright_black] [bright_cyan]{result.commit_hash[:8]}[/bright_cyan]\n"
-        if result.learnings:
-            content += f"[bright_black]Learnings:[/bright_black]\n"
-            for l in result.learnings[:3]:  # Show max 3 learnings
-                content += f"  [bright_yellow]•[/bright_yellow] {l}\n"
-        console.print(Panel(content.strip(), title=f"[bold bright_green]{story.id}[/bold bright_green]", border_style="bright_green"))
+        content += _format_learnings(result.learnings)
+        console.print(Panel(content.strip(), title=f"[bold bright_green]{story_id}[/bold bright_green]", border_style="bright_green"))
     else:
-        content = f"[bold bright_red]✗ Failed[/bold bright_red]  {stats}\n"
+        content = f"[bold bright_red]Failed[/bold bright_red]  {stats}\n"
         content += f"[bright_black]Error:[/bright_black] [bright_red]{result.error or 'Unknown'}[/bright_red]\n"
-        if result.learnings:
-            content += f"[bright_black]Learnings:[/bright_black]\n"
-            for l in result.learnings[:3]:
-                content += f"  [bright_yellow]•[/bright_yellow] {l}\n"
-        console.print(Panel(content.strip(), title=f"[bold bright_red]{story.id}[/bold bright_red]", border_style="bright_red"))
+        content += _format_learnings(result.learnings)
+        console.print(Panel(content.strip(), title=f"[bold bright_red]{story_id}[/bold bright_red]", border_style="bright_red"))
 
-    return result
+
+def _format_files_list(files: list[str], cwd: str) -> str:
+    """Format a list of files for display."""
+    if not files:
+        return "[dim]None[/dim]"
+    return ", ".join(f"[bright_white]{shorten_path(f, cwd)}[/bright_white]" for f in files)
+
+
+def _format_learnings(learnings: list[str]) -> str:
+    """Format learnings for display."""
+    if not learnings:
+        return ""
+    lines = ["[bright_black]Learnings:[/bright_black]"]
+    for learning in learnings[:3]:
+        lines.append(f"  [bright_yellow]-[/bright_yellow] {learning}")
+    return "\n".join(lines) + "\n"
+
+
+_SUCCESS_INDICATORS = ["successfully", "commit", "all checks pass", "typecheck passes", "tests pass"]
+_FAILURE_INDICATORS = ["error", "failed", "cannot", "unable"]
 
 
 def parse_execution_result(story_id: str, text: str) -> StoryResult:
     """Parse execution result from Claude's response."""
     # Try to find JSON in the response
     json_match = re.search(r"\{[\s\S]*?\}", text)
-
     if json_match:
         try:
             data = json.loads(json_match.group(0))
@@ -229,19 +288,10 @@ def parse_execution_result(story_id: str, text: str) -> StoryResult:
             pass
 
     # Fallback: analyze the text for success indicators
-    success_indicators = [
-        "successfully",
-        "commit",
-        "all checks pass",
-        "typecheck passes",
-        "tests pass",
-    ]
-    failure_indicators = ["error", "failed", "cannot", "unable"]
-
     text_lower = text.lower()
-    success = any(ind in text_lower for ind in success_indicators) and not any(
-        ind in text_lower for ind in failure_indicators
-    )
+    has_success = any(ind in text_lower for ind in _SUCCESS_INDICATORS)
+    has_failure = any(ind in text_lower for ind in _FAILURE_INDICATORS)
+    success = has_success and not has_failure
 
     return StoryResult(
         story_id=story_id,

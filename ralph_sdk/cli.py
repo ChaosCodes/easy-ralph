@@ -1,13 +1,14 @@
 """Command-line interface for Ralph SDK."""
 
 import asyncio
-import typer
 from pathlib import Path
+
+import typer
 from rich.console import Console
-from ralph_sdk.orchestrator import run_ralph, run_from_prd_file
-from ralph_sdk.prd_generator import load_prd, save_prd, display_prd
-from ralph_sdk.clarifier import clarify_requirements
-from ralph_sdk.prd_generator import generate_prd
+
+from ralph_sdk.clarifier import clarify_requirements, quick_clarify
+from ralph_sdk.orchestrator import run_from_prd_file, run_ralph
+from ralph_sdk.prd_generator import display_prd, generate_prd, load_prd, save_prd
 
 app = typer.Typer(
     name="ralph-sdk",
@@ -68,26 +69,25 @@ def plan(
     Example:
         ralph-sdk plan "Add task priority feature" -o tasks/prd-priority.json
     """
-
-    async def _plan():
-        from ralph_sdk.clarifier import quick_clarify
-
-        if skip_clarify:
-            requirements = await quick_clarify(prompt)
-        else:
-            requirements = await clarify_requirements(prompt)
-
-        prd = await generate_prd(requirements, cwd=cwd)
-        save_prd(prd, output)
-        return prd
-
     try:
-        prd = asyncio.run(_plan())
+        prd = asyncio.run(_generate_prd(prompt, cwd, output, skip_clarify))
         console.print(f"\n[green]PRD saved to {output}[/green]")
         console.print(f"Run with: [cyan]ralph-sdk execute {output}[/cyan]")
     except KeyboardInterrupt:
         console.print("\n[yellow]Cancelled by user[/yellow]")
         raise typer.Exit(130)
+
+
+async def _generate_prd(prompt: str, cwd: str, output: str, skip_clarify: bool):
+    """Helper to generate and save a PRD."""
+    if skip_clarify:
+        requirements = await quick_clarify(prompt)
+    else:
+        requirements = await clarify_requirements(prompt)
+
+    prd = await generate_prd(requirements, cwd=cwd)
+    save_prd(prd, output)
+    return prd
 
 
 @app.command()

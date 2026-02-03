@@ -2,17 +2,24 @@
 
 import asyncio
 import os
-from pathlib import Path
-from ralph_sdk.models import PRD, ExecutionContext
-from ralph_sdk.clarifier import clarify_requirements, quick_clarify
-from ralph_sdk.prd_generator import generate_prd, save_prd, load_prd
-from ralph_sdk.executor import execute_story
-from ralph_sdk.progress import ProgressTracker, init_progress_file
+
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+
+from ralph_sdk.clarifier import clarify_requirements, quick_clarify
+from ralph_sdk.executor import execute_story
+from ralph_sdk.models import ExecutionContext, PRD
+from ralph_sdk.prd_generator import generate_prd, load_prd, save_prd
+from ralph_sdk.progress import init_progress_file, ProgressTracker
 
 console = Console()
+
+
+def _show_startup_panel(title: str, **kwargs: str) -> None:
+    """Display a startup panel with the given title and key-value pairs."""
+    lines = ["[bold]Ralph SDK[/bold]", ""]
+    lines.extend(f"{k}: {v}" for k, v in kwargs.items())
+    console.print(Panel("\n".join(lines), title=title, border_style="blue"))
 
 
 async def run_ralph(
@@ -41,14 +48,9 @@ async def run_ralph(
     prd_path = os.path.join(cwd, prd_file)
     progress_path = os.path.join(cwd, progress_file)
 
-    console.print(
-        Panel(
-            f"[bold]Ralph SDK[/bold]\n\n"
-            f"Working directory: {cwd}\n"
-            f"Max iterations: {max_iterations}",
-            title="Starting",
-            border_style="blue",
-        )
+    _show_startup_panel(
+        "Starting",
+        **{"Working directory": cwd, "Max iterations": str(max_iterations)},
     )
 
     # Phase 1: Clarify requirements
@@ -57,7 +59,7 @@ async def run_ralph(
     if skip_clarify:
         requirements = await quick_clarify(initial_prompt)
     else:
-        requirements = await clarify_requirements(initial_prompt)
+        requirements = await clarify_requirements(initial_prompt, cwd=cwd)
 
     # Phase 2: Generate PRD
     console.print("\n[bold cyan]Phase 2: PRD Generation[/bold cyan]\n")
@@ -114,57 +116,44 @@ async def execute_prd(
     # Setup git branch
     await setup_branch(context)
 
-    iteration = 0
-    while iteration < max_iterations:
-        iteration += 1
-
-        # Get next story
+    for iteration in range(1, max_iterations + 1):
         story = prd.get_next_story()
-
         if story is None:
             console.print("\n[bold green]All stories complete![/bold green]")
             return True
 
-        console.print(
-            f"\n[bold]═══ Iteration {iteration}/{max_iterations} ═══[/bold]\n"
-        )
+        console.print(f"\n[bold]=== Iteration {iteration}/{max_iterations} ===[/bold]\n")
         console.print(f"Progress: {prd.progress_summary()}")
 
-        # Execute the story
         result = await execute_story(
             story=story,
             context=context,
             progress_context=progress.get_context(),
         )
 
-        # Update progress
+        # Update progress tracking
         progress.append_log(story.id, result)
         progress.consolidate_patterns(result.learnings)
         progress.save()
 
         if result.success:
-            # Mark story complete and save PRD
             prd.mark_complete(story.id, notes="\n".join(result.learnings))
             save_prd(prd, prd_path)
         else:
-            console.print(
-                f"\n[yellow]Story {story.id} failed. "
-                f"Continuing to next iteration...[/yellow]"
-            )
+            console.print(f"\n[yellow]Story {story.id} failed. Continuing...[/yellow]")
 
-        # Small delay between iterations
         await asyncio.sleep(1)
 
     # Check final status
     if prd.is_complete():
         console.print("\n[bold green]All stories complete![/bold green]")
         return True
-    else:
-        console.print(
-            f"\n[yellow]Reached max iterations ({max_iterations}). "
-            f"{prd.progress_summary()}[/yellow]"
-        )
-        return False
+
+    console.print(
+        f"\n[yellow]Reached max iterations ({max_iterations}). "
+        f"{prd.progress_summary()}[/yellow]"
+    )
+    return False
 
 
 async def setup_branch(context: ExecutionContext) -> None:
@@ -215,14 +204,10 @@ async def run_from_prd_file(
     cwd = os.path.dirname(prd_path)
     progress_path = os.path.join(cwd, progress_file)
 
-    console.print(
-        Panel(
-            f"[bold]Ralph SDK[/bold]\n\n"
-            f"PRD: {prd_path}\n"
-            f"Max iterations: {max_iterations}",
-            title="Resuming",
-            border_style="blue",
-        )
+    _show_startup_panel(
+        "Resuming",
+        PRD=prd_path,
+        **{"Max iterations": str(max_iterations)},
     )
 
     prd = load_prd(prd_path)

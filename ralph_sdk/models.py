@@ -1,8 +1,9 @@
 """Data models for Ralph SDK."""
 
-from pydantic import BaseModel, Field
-from typing import Optional
 from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, Field
 
 
 class UserStory(BaseModel):
@@ -41,15 +42,15 @@ class PRD(BaseModel):
 
     def get_pending_stories(self) -> list[UserStory]:
         """Get stories that haven't passed yet, sorted by priority."""
-        return sorted(
-            [s for s in self.user_stories if not s.passes],
-            key=lambda s: s.priority,
-        )
+        pending = [s for s in self.user_stories if not s.passes]
+        return sorted(pending, key=lambda s: s.priority)
 
     def get_next_story(self) -> Optional[UserStory]:
         """Get the next story to work on."""
         pending = self.get_pending_stories()
-        return pending[0] if pending else None
+        if not pending:
+            return None
+        return pending[0]
 
     def mark_complete(self, story_id: str, notes: str = "") -> None:
         """Mark a story as complete."""
