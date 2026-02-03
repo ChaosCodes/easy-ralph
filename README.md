@@ -15,13 +15,7 @@ Built on top of [Claude Code SDK](https://github.com/anthropics/claude-code), Ea
 ## Installation
 
 ```bash
-# 1. Install Claude Code CLI (required runtime)
-npm install -g @anthropic-ai/claude-code
-
-# 2. Authenticate with your Anthropic API key
-claude  # Follow the prompts to set up
-
-# 3. Install Easy Ralph
+# Install Easy Ralph (Claude Code CLI is bundled automatically)
 pip install git+https://github.com/ChaosCodes/easy-ralph.git
 
 # Or install from source
@@ -30,7 +24,7 @@ cd easy-ralph
 pip install -e .
 ```
 
-> **Note**: Easy Ralph uses [claude-code-sdk](https://pypi.org/project/claude-code-sdk/) which requires Claude Code CLI as its underlying runtime. The SDK calls CLI internally to interact with Claude and execute tools (Read, Write, Edit, Bash, etc.).
+> **Note**: The [claude-code-sdk](https://github.com/anthropics/claude-agent-sdk-python) bundles Claude Code CLI automatically - no separate installation required.
 
 ## Quick Start
 
@@ -182,7 +176,6 @@ These files enable:
 ## Requirements
 
 - Python 3.10+
-- [Claude Code CLI](https://github.com/anthropics/claude-code) installed and authenticated
 - Anthropic API key (set via `ANTHROPIC_API_KEY` environment variable)
 
 ## License
@@ -204,14 +197,13 @@ Easy Ralph 是一个自主 AI 代理，通过三阶段流水线将自然语言�
 ## 快速使用
 
 ```bash
-# 1. 安装 Claude Code CLI（底层运行时）
-npm install -g @anthropic-ai/claude-code
-claude  # 首次运行完成认证
-
-# 2. 安装 Easy Ralph
+# 安装（Claude Code CLI 已自动打包，无需单独安装）
 pip install git+https://github.com/ChaosCodes/easy-ralph.git
 
-# 3. 运行
+# 设置 API Key
+export ANTHROPIC_API_KEY="your-key"
+
+# 运行
 ralph-sdk run "添加用户认证功能"
 
 # 快速模式（跳过澄清）
@@ -220,8 +212,6 @@ ralph-sdk run "修复 auth.py 中的 bug" --quick
 # 从现有 PRD 继续执行
 ralph-sdk execute prd.json
 ```
-
-> **说明**: Easy Ralph 使用 claude-code-sdk，它需要 Claude Code CLI 作为底层运行时。SDK 内部调用 CLI 来与 Claude 交互并执行工具操作。
 
 ## 特点
 
