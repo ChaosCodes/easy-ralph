@@ -1,0 +1,19 @@
+[project]
+name = "ralph-sdk"
+version = "0.1.0"
+description = "Ralph autonomous agent loop using Claude Agent SDK"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "claude-code-sdk>=0.0.20",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+    "typer>=0.9.0",
+]
+
+[project.scripts]
+ralph-sdk = "ralph_sdk.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
