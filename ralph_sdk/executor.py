@@ -13,22 +13,6 @@ from ralph_sdk.prompts import EXECUTOR_SYSTEM_PROMPT
 
 console = Console()
 
-# Tool icons for display
-_TOOL_ICONS = {
-    "Read": "R",
-    "Write": "W",
-    "Edit": "E",
-    "Bash": "$",
-    "Glob": "G",
-    "Grep": "?",
-    "Task": "T",
-    "LSP": "L",
-    "WebFetch": "F",
-    "WebSearch": "S",
-    "NotebookEdit": "N",
-}
-
-
 def shorten_path(path: str, cwd: str = "") -> str:
     """Shorten file path for display."""
     if cwd and path.startswith(cwd):
@@ -42,68 +26,65 @@ def shorten_path(path: str, cwd: str = "") -> str:
 
 def format_tool_line(tool_name: str, tool_input: dict, cwd: str = "") -> str:
     """Format a tool use as a single compact line with rich highlighting."""
-    icon = _TOOL_ICONS.get(tool_name, "?")
-    prefix = f"[{icon}]"
-
     if tool_name == "Read":
         path = shorten_path(tool_input.get("file_path", "?"), cwd)
-        return f"{prefix} [bold cyan]Read[/bold cyan] {path}"
+        return f"[bold cyan]Read[/bold cyan] {path}"
 
     if tool_name == "Write":
         path = shorten_path(tool_input.get("file_path", "?"), cwd)
         lines = len(tool_input.get("content", "").split("\n"))
-        return f"{prefix} [bold green]Write[/bold green] {path} [dim]({lines} lines)[/dim]"
+        return f"[bold green]Write[/bold green] {path} [dim]({lines} lines)[/dim]"
 
     if tool_name == "Edit":
         path = shorten_path(tool_input.get("file_path", "?"), cwd)
         old_lines = len(tool_input.get("old_string", "").split("\n"))
         new_lines = len(tool_input.get("new_string", "").split("\n"))
-        return f"{prefix} [bold yellow]Edit[/bold yellow] {path} [red]-{old_lines}[/red] [green]+{new_lines}[/green]"
+        return f"[bold yellow]Edit[/bold yellow] {path} [red]-{old_lines}[/red] [green]+{new_lines}[/green]"
 
     if tool_name == "Bash":
         cmd = tool_input.get("command", "?")
         if len(cmd) > 60:
             cmd = cmd[:57] + "..."
-        return f"{prefix} [bold magenta]Bash[/bold magenta] {cmd}"
+        return f"[bold magenta]Bash[/bold magenta] {cmd}"
 
     if tool_name == "Glob":
         pattern = tool_input.get("pattern", "?")
         path = tool_input.get("path", "")
         suffix = f" [dim]in {shorten_path(path, cwd)}[/dim]" if path else ""
-        return f"{prefix} [bold blue]Glob[/bold blue] {pattern}{suffix}"
+        return f"[bold blue]Glob[/bold blue] {pattern}{suffix}"
 
     if tool_name == "Grep":
         pattern = tool_input.get("pattern", "?")
         path = shorten_path(tool_input.get("path", "."), cwd)
-        return f"{prefix} [bold blue]Grep[/bold blue] '{pattern}' [dim]in {path}[/dim]"
+        return f"[bold blue]Grep[/bold blue] '{pattern}' [dim]in {path}[/dim]"
 
     if tool_name == "Task":
         desc = tool_input.get("description", "?")
         subagent = tool_input.get("subagent_type", "")
-        return f"{prefix} [bold cyan]Task[/bold cyan] {desc} [dim]({subagent})[/dim]"
+        return f"[bold cyan]Task[/bold cyan] {desc} [dim]({subagent})[/dim]"
 
     if tool_name == "LSP":
         op = tool_input.get("operation", "?")
         path = shorten_path(tool_input.get("filePath", "?"), cwd)
         line = tool_input.get("line", "?")
-        return f"{prefix} [bold green]LSP[/bold green] {op} {path}:{line}"
+        return f"[bold green]LSP[/bold green] {op} {path}:{line}"
 
     if tool_name == "WebFetch":
         url = tool_input.get("url", "?")
         if len(url) > 50:
             url = url[:47] + "..."
-        return f"{prefix} [bold blue]WebFetch[/bold blue] {url}"
+        return f"[bold blue]WebFetch[/bold blue] {url}"
 
     if tool_name == "WebSearch":
         q = tool_input.get("query", "?")
-        return f"{prefix} [bold blue]WebSearch[/bold blue] '{q}'"
+        return f"[bold blue]WebSearch[/bold blue] '{q}'"
 
     if tool_name == "NotebookEdit":
         path = shorten_path(tool_input.get("notebook_path", "?"), cwd)
         edit_mode = tool_input.get("edit_mode", "replace")
-        return f"{prefix} [bold purple]NotebookEdit[/bold purple] {path} [dim]({edit_mode})[/dim]"
+        return f"[bold purple]NotebookEdit[/bold purple] {path} [dim]({edit_mode})[/dim]"
 
-    return f"{prefix} [bold]{tool_name}[/bold]"
+    return f"[bold]{tool_name}[/bold]"
 
 
 async def execute_story(
