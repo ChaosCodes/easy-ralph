@@ -22,9 +22,18 @@ pip install git+https://github.com/ChaosCodes/easy-ralph.git
 git clone https://github.com/ChaosCodes/easy-ralph.git
 cd easy-ralph
 pip install -e .
+
+# Set your API key
+export ANTHROPIC_API_KEY="your-key"
 ```
 
 > **Note**: The [claude-code-sdk](https://github.com/anthropics/claude-agent-sdk-python) bundles Claude Code CLI automatically - no separate installation required.
+>
+> If you prefer to use a system-wide installation or a specific version:
+> ```bash
+> # Install Claude Code separately
+> curl -fsSL https://claude.ai/install.sh | bash
+> ```
 
 ## Quick Start
 
