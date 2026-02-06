@@ -1,0 +1,97 @@
+{
+  "experiment": "autonomous_judgment_vs_wait",
+  "timestamp": "20260205_202921",
+  "simulated_scores": [
+    45,
+    52,
+    55,
+    54,
+    58,
+    60
+  ],
+  "results": [
+    {
+      "mode": "user_wait",
+      "total_time": 296.9880051612854,
+      "total_user_wait": 20.0,
+      "iterations": 4,
+      "final_score": 0.0,
+      "pivot_at_iteration": 4,
+      "iteration_details": [
+        {
+          "iteration": 0,
+          "score": 45,
+          "wait_for_user": true,
+          "eval_score": 0.0,
+          "should_pivot": false,
+          "pivot_reason": "",
+          "user_wait_time": 5.0
+        },
+        {
+          "iteration": 1,
+          "score": 52,
+          "wait_for_user": true,
+          "eval_score": 15.0,
+          "should_pivot": true,
+          "pivot_reason": "硬性指标持续失败: runs_without_error",
+          "user_wait_time": 5.0
+        },
+        {
+          "iteration": 2,
+          "score": 55,
+          "wait_for_user": true,
+          "eval_score": 0.0,
+          "should_pivot": true,
+          "pivot_reason": "尝试 3 次，平均每次改进 -15.0 分，低于阈值 5.0",
+          "user_wait_time": 5.0
+        },
+        {
+          "iteration": 3,
+          "score": 54,
+          "wait_for_user": true,
+          "eval_score": 0.0,
+          "should_pivot": true,
+          "pivot_reason": "尝试 4 次，平均每次改进 -11.2 分，低于阈值 5.0",
+          "user_wait_time": 5.0
+        }
+      ]
+    },
+    {
+      "mode": "autonomous",
+      "total_time": 244.39867997169495,
+      "total_user_wait": 0.0,
+      "iterations": 3,
+      "final_score": 52.0,
+      "pivot_at_iteration": 3,
+      "iteration_details": [
+        {
+          "iteration": 0,
+          "score": 45,
+          "wait_for_user": false,
+          "eval_score": 15.0,
+          "should_pivot": false,
+          "pivot_reason": "",
+          "user_wait_time": 0.0
+        },
+        {
+          "iteration": 1,
+          "score": 52,
+          "wait_for_user": false,
+          "eval_score": 45.0,
+          "should_pivot": false,
+          "pivot_reason": "",
+          "user_wait_time": 0.0
+        },
+        {
+          "iteration": 2,
+          "score": 55,
+          "wait_for_user": false,
+          "eval_score": 52.0,
+          "should_pivot": true,
+          "pivot_reason": "尝试 3 次，平均每次改进 2.3 分，低于阈值 5.0",
+          "user_wait_time": 0.0
+        }
+      ]
+    }
+  ]
+}
