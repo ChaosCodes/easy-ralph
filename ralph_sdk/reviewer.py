@@ -7,6 +7,7 @@ Possible verdicts:
 - FAILED: fundamental issue, need different approach
 """
 
+import json
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -34,22 +35,59 @@ class ReviewResult:
     suggestions: str = ""
 
 
+def _extract_json(text: str) -> dict | None:
+    """Extract a JSON object from text, handling common LLM output patterns."""
+    # Pattern 1: JSON in markdown code fence
+    fence_match = re.search(r"```(?:json)?\s*\n(\{.*?\})\s*\n```", text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Pattern 2: Bare JSON object
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end > brace_start:
+        try:
+            return json.loads(text[brace_start:brace_end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
 def parse_reviewer_output(text: str) -> ReviewResult:
-    """Parse reviewer output into a ReviewResult."""
-    # Extract VERDICT
+    """Parse reviewer output into a ReviewResult.
+
+    Tries JSON first (more reliable), falls back to regex for backwards compatibility.
+    """
+    # Try JSON parsing first
+    json_obj = _extract_json(text)
+    if json_obj and "verdict" in json_obj:
+        verdict_str = json_obj["verdict"].lower()
+        try:
+            verdict = Verdict(verdict_str)
+        except ValueError:
+            verdict = Verdict.PASSED
+        return ReviewResult(
+            verdict=verdict,
+            reason=json_obj.get("reason", ""),
+            suggestions=json_obj.get("suggestions", ""),
+        )
+
+    # Fallback: regex parsing
     verdict_match = re.search(r"VERDICT:\s*(\w+)", text, re.IGNORECASE)
     verdict_str = verdict_match.group(1).lower() if verdict_match else "passed"
 
     try:
         verdict = Verdict(verdict_str)
     except ValueError:
-        verdict = Verdict.PASSED  # Default to passed if unknown
+        verdict = Verdict.PASSED
 
-    # Extract REASON
     reason_match = re.search(r"REASON:\s*(.+?)(?=\n(?:SUGGESTIONS:|$))", text, re.IGNORECASE | re.DOTALL)
     reason = reason_match.group(1).strip() if reason_match else ""
 
-    # Extract SUGGESTIONS
     suggestions_match = re.search(r"SUGGESTIONS:\s*(.+)", text, re.IGNORECASE | re.DOTALL)
     suggestions = suggestions_match.group(1).strip() if suggestions_match else ""
 

@@ -9,6 +9,7 @@ Reads goal.md and pool.md, outputs one of these actions:
 - DONE: Goal completed
 """
 
+import json
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -99,67 +100,111 @@ class PlannerDecision:
         return None
 
 
-def parse_planner_output(text: str) -> PlannerDecision:
-    """Parse planner output into a PlannerDecision."""
-    # Extract ACTION
+def _extract_json(text: str) -> dict | None:
+    """Extract a JSON object from text, handling common LLM output patterns."""
+    # Pattern 1: JSON in markdown code fence
+    fence_match = re.search(r"```(?:json)?\s*\n(\{.*?\})\s*\n```", text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Pattern 2: Bare JSON object
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end > brace_start:
+        try:
+            return json.loads(text[brace_start:brace_end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+def _parse_planner_json(obj: dict) -> PlannerDecision:
+    """Parse a JSON object into a PlannerDecision."""
+    action_str = obj.get("action", "skip").lower()
+    try:
+        action = Action(action_str)
+    except ValueError:
+        action = Action.SKIP
+
+    target = obj.get("target")
+    task_ids = obj.get("task_ids", [])
+    if isinstance(task_ids, str):
+        task_ids = re.findall(r'T\d+', task_ids)
+
+    hedge_for = target if action in (Action.HEDGE, Action.PIVOT_WAIT) else None
+
+    return PlannerDecision(
+        action=action,
+        target=target,
+        task_ids=task_ids,
+        reason=obj.get("reason", ""),
+        new_tasks=obj.get("new_tasks", ""),
+        question=obj.get("question", ""),
+        modification=obj.get("modification", ""),
+        hedge_for=hedge_for,
+        failure_assumptions=obj.get("failure_assumptions", ""),
+        current_approach=obj.get("current_approach", ""),
+        blocker=obj.get("blocker", ""),
+        new_direction=obj.get("new_direction", ""),
+        attempt_count=int(obj.get("attempt_count", 0)),
+        best_score=str(obj.get("best_score", "")),
+        failure_pattern=obj.get("failure_pattern", ""),
+        new_approach=obj.get("new_approach", ""),
+    )
+
+
+def _parse_planner_regex(text: str) -> PlannerDecision:
+    """Parse planner output using regex (legacy fallback)."""
     action_match = re.search(r"ACTION:\s*(\w+)", text, re.IGNORECASE)
-    # Default to SKIP if parsing fails - safer than DONE which would terminate
     action_str = action_match.group(1).lower() if action_match else "skip"
 
     try:
         action = Action(action_str)
     except ValueError:
-        action = Action.SKIP  # Default to skip if unknown action
+        action = Action.SKIP
 
-    # Extract TARGET (single task ID)
     target_match = re.search(r"TARGET:\s*(T\d+)", text, re.IGNORECASE)
     target = target_match.group(1) if target_match else None
 
-    # Extract TASK_IDS (multiple task IDs for PARALLEL_EXECUTE)
-    # Format: TASK_IDS: T001, T002, T003 or TASK_IDS: T001 T002 T003
     task_ids = []
     task_ids_match = re.search(r"TASK_IDS:\s*(.+?)(?=\n|$)", text, re.IGNORECASE)
     if task_ids_match:
-        task_ids_str = task_ids_match.group(1)
-        # Extract all task IDs from the line
-        task_ids = re.findall(r'T\d+', task_ids_str)
+        task_ids = re.findall(r'T\d+', task_ids_match.group(1))
 
-    # Extract REASON (up to next field or end)
     reason_match = re.search(
         r"REASON:\s*(.+?)(?=\n(?:NEW_TASKS:|QUESTION:|MODIFICATION:|TASK_IDS:|CURRENT_APPROACH:|ATTEMPT_COUNT:|$))",
         text, re.IGNORECASE | re.DOTALL
     )
     reason = reason_match.group(1).strip() if reason_match else ""
 
-    # Extract NEW_TASKS
     new_tasks_match = re.search(
         r"NEW_TASKS:\s*(.+?)(?=\n(?:QUESTION:|MODIFICATION:|$)|\Z)",
         text, re.IGNORECASE | re.DOTALL
     )
     new_tasks = new_tasks_match.group(1).strip() if new_tasks_match else ""
 
-    # Extract QUESTION (for ASK action)
     question_match = re.search(
         r"QUESTION:\s*(.+?)(?=\n(?:MODIFICATION:|$)|\Z)",
         text, re.IGNORECASE | re.DOTALL
     )
     question = question_match.group(1).strip() if question_match else ""
 
-    # Extract MODIFICATION (for MODIFY action)
     modification_match = re.search(
         r"MODIFICATION:\s*(.+?)(?=\n(?:FAILURE_ASSUMPTIONS:|$)|\Z)",
         text, re.IGNORECASE | re.DOTALL
     )
     modification = modification_match.group(1).strip() if modification_match else ""
 
-    # Extract FAILURE_ASSUMPTIONS (for HEDGE/PIVOT_WAIT action)
     failure_match = re.search(
         r"FAILURE_ASSUMPTIONS:\s*(.+?)(?=\n(?:NEW_TASKS:|$)|\Z)",
         text, re.IGNORECASE | re.DOTALL
     )
     failure_assumptions = failure_match.group(1).strip() if failure_match else ""
 
-    # Extract PIVOT_RESEARCH fields
     current_approach_match = re.search(
         r"CURRENT_APPROACH:\s*(.+?)(?=\n(?:BLOCKER:|$)|\Z)",
         text, re.IGNORECASE | re.DOTALL
@@ -178,14 +223,10 @@ def parse_planner_output(text: str) -> PlannerDecision:
     )
     new_direction = new_direction_match.group(1).strip() if new_direction_match else ""
 
-    # Extract PIVOT_ITERATION fields
     attempt_count_match = re.search(r"ATTEMPT_COUNT:\s*(\d+)", text, re.IGNORECASE)
     attempt_count = int(attempt_count_match.group(1)) if attempt_count_match else 0
 
-    best_score_match = re.search(
-        r"BEST_SCORE:\s*(.+?)(?=\n|$)",
-        text, re.IGNORECASE
-    )
+    best_score_match = re.search(r"BEST_SCORE:\s*(.+?)(?=\n|$)", text, re.IGNORECASE)
     best_score = best_score_match.group(1).strip() if best_score_match else ""
 
     failure_pattern_match = re.search(
@@ -200,7 +241,6 @@ def parse_planner_output(text: str) -> PlannerDecision:
     )
     new_approach = new_approach_match.group(1).strip() if new_approach_match else ""
 
-    # For HEDGE/PIVOT_WAIT action, target is the task being hedged
     hedge_for = target if action in (Action.HEDGE, Action.PIVOT_WAIT) else None
 
     return PlannerDecision(
@@ -213,16 +253,26 @@ def parse_planner_output(text: str) -> PlannerDecision:
         modification=modification,
         hedge_for=hedge_for,
         failure_assumptions=failure_assumptions,
-        # PIVOT_RESEARCH fields
         current_approach=current_approach,
         blocker=blocker,
         new_direction=new_direction,
-        # PIVOT_ITERATION fields
         attempt_count=attempt_count,
         best_score=best_score,
         failure_pattern=failure_pattern,
         new_approach=new_approach,
     )
+
+
+def parse_planner_output(text: str) -> PlannerDecision:
+    """Parse planner output into a PlannerDecision.
+
+    Tries JSON first (more reliable), falls back to regex for backwards compatibility.
+    """
+    json_obj = _extract_json(text)
+    if json_obj and "action" in json_obj:
+        return _parse_planner_json(json_obj)
+
+    return _parse_planner_regex(text)
 
 
 async def plan(cwd: str = ".", verbose: bool = False, explore_mode: bool = False) -> PlannerDecision:

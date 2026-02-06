@@ -758,23 +758,30 @@ You MUST:
 - 没有合理的替代方案需要探索
 
 ## Output Format
+
+Output your decision as a JSON object:
+
+```json
+{{
+    "action": "execute|explore|parallel_execute|create|modify|delete|skip|ask|hedge|pivot_research|pivot_wait|pivot_iteration|done",
+    "target": "task_id (for single task actions)",
+    "task_ids": ["T001", "T002"],
+    "reason": "why this action",
+    "new_tasks": "for CREATE/HEDGE/PIVOT - describe the new tasks",
+    "modification": "for MODIFY - describe the changes",
+    "question": "for ASK - the question for the user",
+    "failure_assumptions": "for HEDGE/PIVOT_WAIT - list failure assumptions",
+    "current_approach": "for PIVOT_RESEARCH - what approach is being abandoned",
+    "blocker": "for PIVOT_RESEARCH - why it's not viable",
+    "new_direction": "for PIVOT_RESEARCH - what new direction to try",
+    "attempt_count": 0,
+    "best_score": "for PIVOT_ITERATION - highest score achieved",
+    "failure_pattern": "for PIVOT_ITERATION - what pattern of failure",
+    "new_approach": "for PIVOT_ITERATION - new approach to try"
+}}
 ```
-ACTION: <execute|explore|parallel_execute|create|modify|delete|skip|ask|hedge|pivot_research|pivot_wait|pivot_iteration|done>
-TARGET: <task_id> (for single task actions)
-TASK_IDS: <task_id1, task_id2, ...> (for PARALLEL_EXECUTE)
-REASON: <why this action>
-NEW_TASKS: (for CREATE/HEDGE/PIVOT - describe the new tasks)
-MODIFICATION: (for MODIFY - describe the changes)
-QUESTION: (for ASK - the question for the user)
-FAILURE_ASSUMPTIONS: (for HEDGE/PIVOT_WAIT - list failure assumptions and alternatives)
-CURRENT_APPROACH: (for PIVOT_RESEARCH - what approach is being abandoned)
-BLOCKER: (for PIVOT_RESEARCH - why it's not viable)
-NEW_DIRECTION: (for PIVOT_RESEARCH - what new direction to try)
-ATTEMPT_COUNT: (for PIVOT_ITERATION - how many attempts made)
-BEST_SCORE: (for PIVOT_ITERATION - highest score achieved)
-FAILURE_PATTERN: (for PIVOT_ITERATION - what pattern of failure)
-NEW_APPROACH: (for PIVOT_ITERATION - new approach to try)
-```
+
+Only include fields relevant to your chosen action. `action` and `reason` are always required.
 
 **Remember**: For CREATE/HEDGE/PIVOT, you must update BOTH pool.md AND create task files!
 """
@@ -945,10 +952,15 @@ Fundamental issue that requires a different approach:
 - Need to rethink the solution
 
 ## Output Format
-```
-VERDICT: <passed|retry|failed>
-REASON: <explanation>
-SUGGESTIONS: (if retry or failed, what should be done)
+
+Output your verdict as a JSON object:
+
+```json
+{{
+    "verdict": "passed" | "retry" | "failed",
+    "reason": "explanation of your verdict",
+    "suggestions": "what to improve (empty string if passed)"
+}}
 ```
 """
 
