@@ -1,0 +1,148 @@
+{
+  "experiment": "exp1_reviewer_json_phase1",
+  "regex_accuracy": 0.6,
+  "json_accuracy": 1.0,
+  "total_scenarios": 20,
+  "results": [
+    {
+      "name": "passed_regex",
+      "expected": "passed",
+      "regex": "passed",
+      "json": "passed",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "passed_regex_uppercase",
+      "expected": "passed",
+      "regex": "passed",
+      "json": "passed",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "passed_json_bare",
+      "expected": "passed",
+      "regex": "passed",
+      "json": "passed",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "passed_json_fenced",
+      "expected": "passed",
+      "regex": "passed",
+      "json": "passed",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "passed_json_with_surrounding_text",
+      "expected": "passed",
+      "regex": "passed",
+      "json": "passed",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "retry_regex",
+      "expected": "retry",
+      "regex": "retry",
+      "json": "retry",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "retry_regex_verification",
+      "expected": "retry",
+      "regex": "retry",
+      "json": "retry",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "retry_regex_multiline",
+      "expected": "retry",
+      "regex": "retry",
+      "json": "retry",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "retry_json_bare",
+      "expected": "retry",
+      "regex": "passed",
+      "json": "retry",
+      "status": "JSON WINS"
+    },
+    {
+      "name": "retry_json_fenced",
+      "expected": "retry",
+      "regex": "passed",
+      "json": "retry",
+      "status": "JSON WINS"
+    },
+    {
+      "name": "retry_json_multiline_suggestions",
+      "expected": "retry",
+      "regex": "passed",
+      "json": "retry",
+      "status": "JSON WINS"
+    },
+    {
+      "name": "retry_json_mixed_case",
+      "expected": "retry",
+      "regex": "passed",
+      "json": "retry",
+      "status": "JSON WINS"
+    },
+    {
+      "name": "failed_regex",
+      "expected": "failed",
+      "regex": "failed",
+      "json": "failed",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "failed_json_bare",
+      "expected": "failed",
+      "regex": "passed",
+      "json": "failed",
+      "status": "JSON WINS"
+    },
+    {
+      "name": "failed_json_fenced",
+      "expected": "failed",
+      "regex": "passed",
+      "json": "failed",
+      "status": "JSON WINS"
+    },
+    {
+      "name": "edge_no_suggestions_regex",
+      "expected": "passed",
+      "regex": "passed",
+      "json": "passed",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "edge_no_suggestions_json",
+      "expected": "passed",
+      "regex": "passed",
+      "json": "passed",
+      "status": "BOTH OK"
+    },
+    {
+      "name": "edge_extra_fields_json",
+      "expected": "retry",
+      "regex": "passed",
+      "json": "retry",
+      "status": "JSON WINS"
+    },
+    {
+      "name": "edge_json_multiline_reason",
+      "expected": "retry",
+      "regex": "passed",
+      "json": "retry",
+      "status": "JSON WINS"
+    },
+    {
+      "name": "edge_empty_text",
+      "expected": "passed",
+      "regex": "passed",
+      "json": "passed",
+      "status": "BOTH OK"
+    }
+  ]
+}

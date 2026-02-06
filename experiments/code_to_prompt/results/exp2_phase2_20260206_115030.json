@@ -1,0 +1,369 @@
+{
+  "experiment": "exp2_evaluator_pivot_phase2",
+  "total_trials": 40,
+  "errors": 0,
+  "accuracy": 0.875,
+  "passed": false,
+  "results": [
+    {
+      "scenario": "too_many_attempts_weak_improvement",
+      "trial": 1,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Too many attempts with weak progress. After 3 attempts, the average improvement is only (34 - 30) / 3 = 1.33 points per attempt, which is well below the 5 points/attempt threshold. The score has barely moved from 30 \u2192 32 \u2192 34 over three attempts, and at 34/100 the score is a",
+      "error": null
+    },
+    {
+      "scenario": "too_many_attempts_weak_improvement",
+      "trial": 2,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Too many attempts with weak progress. After 3 attempts, the average improvement is only (34 - 30) / 3 = 1.33 points per attempt, which is well below the 5 points/attempt threshold. The score has barely moved from 30 \u2192 32 \u2192 34 over three attempts, indicating the current appro",
+      "error": null
+    },
+    {
+      "scenario": "too_many_attempts_weak_improvement",
+      "trial": 3,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Too many attempts with weak progress. After 3 attempts, the average improvement is only (34 - 30) / 3 = 1.33 points per attempt, which is well below the 5 points/attempt threshold. The score has barely moved from 30 \u2192 32 \u2192 34 over three attempts, indicating the current appro",
+      "error": null
+    },
+    {
+      "scenario": "too_many_attempts_weak_improvement",
+      "trial": 4,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Too many attempts with weak progress. After 3 attempts, the average improvement is only (34 - 30) / 3 = 1.33 points per attempt, well below the 5-point threshold. The score has barely moved from 30 \u2192 32 \u2192 34 over three attempts, indicating the current approach is making marg",
+      "error": null
+    },
+    {
+      "scenario": "too_many_attempts_weak_improvement",
+      "trial": 5,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Too many attempts with weak progress. After 3 attempts, the average improvement is only (34 - 30) / 3 = 1.33 points per attempt, which is well below the 5 points/attempt threshold. The score has barely moved from 30 \u2192 32 \u2192 34 over three attempts, indicating the current appro",
+      "error": null
+    },
+    {
+      "scenario": "declining_scores",
+      "trial": 1,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Two clear conditions are met: (1) **Scores declining** \u2014 the last 3 scores show consistent decline: 40 \u2192 35 \u2192 30, each lower than the previous. (2) **Too many attempts with weak progress** \u2014 at attempt 3, the average improvement is (30 - 40) / 3 = -3.3 points per attempt, wh",
+      "error": null
+    },
+    {
+      "scenario": "declining_scores",
+      "trial": 2,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Two clear conditions are met: (1) **Scores declining** \u2014 the last 3 scores show consistent decline: 40 \u2192 35 \u2192 30, each lower than the previous. (2) **Too many attempts with weak progress** \u2014 at attempt 3, the average improvement is (30 - 40) / 3 = -3.3 points per attempt, wh",
+      "error": null
+    },
+    {
+      "scenario": "declining_scores",
+      "trial": 3,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Two clear conditions are met: (1) **Scores declining** \u2014 the last 3 scores show consistent decline: 40 \u2192 35 \u2192 30, each lower than the previous. (2) **Too many attempts with weak progress** \u2014 at attempt 3, the average improvement is (30 - 40) / 3 = -3.3 points per attempt, wh",
+      "error": null
+    },
+    {
+      "scenario": "declining_scores",
+      "trial": 4,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Scores are consistently declining across all 3 attempts (40 \u2192 35 \u2192 30), meeting the \"scores declining\" condition. Additionally, with an average improvement of (30 - 40) / 3 = -3.3 points per attempt, progress is negative rather than positive. The current approach is clearly ",
+      "error": null
+    },
+    {
+      "scenario": "declining_scores",
+      "trial": 5,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Two clear conditions are met: (1) **Scores declining** \u2014 the last 3 scores show consistent decline: 40 \u2192 35 \u2192 30, each lower than the previous. (2) **Too many attempts with weak progress** \u2014 at attempt 3, the average improvement is (30 - 40) / 3 = -3.3 points per attempt, wh",
+      "error": null
+    },
+    {
+      "scenario": "stuck_scores",
+      "trial": 1,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Scores are stuck \u2014 all three scores (44, 45, 44) are within 3 points of each other, meeting the \"scores stuck\" condition. Additionally, the average improvement is 0 points per attempt ((44 - 44) / 3 = 0), which is well below the 5 points/attempt threshold after 3 attempts. T",
+      "error": null
+    },
+    {
+      "scenario": "stuck_scores",
+      "trial": 2,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Scores are stuck \u2014 all three scores (44, 45, 44) are within 3 points of each other, showing no meaningful progress across 3 attempts. The average improvement is 0 points per attempt ((44 - 44) / 3 = 0). This meets both the \"scores stuck\" condition (last 3 scores within 3 poi",
+      "error": null
+    },
+    {
+      "scenario": "stuck_scores",
+      "trial": 3,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Scores are stuck \u2014 all three scores (44, 45, 44) are within 3 points of each other, meeting the \"scores stuck\" condition. Additionally, the average improvement is 0 points per attempt ((44 - 44) / 3 = 0), which is well below the 5 points/attempt threshold after 3 attempts. T",
+      "error": null
+    },
+    {
+      "scenario": "stuck_scores",
+      "trial": 4,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Scores are stuck \u2014 all three scores (44, 45, 44) are within 3 points of each other, meeting the \"scores stuck\" condition. Additionally, average improvement is 0 points per attempt ((44 - 44) / 3 = 0), which is well below the 5 points/attempt threshold after 3 attempts. The c",
+      "error": null
+    },
+    {
+      "scenario": "stuck_scores",
+      "trial": 5,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Scores are stuck \u2014 all three scores (44, 45, 44) are within 3 points of each other, meeting the \"scores stuck\" condition. Additionally, after 3 attempts the average improvement is 0 points per attempt ((44 - 44) / 3 = 0), which is well below the 5 points/attempt threshold. T",
+      "error": null
+    },
+    {
+      "scenario": "hard_metric_keeps_failing",
+      "trial": 1,
+      "expected": "pivot",
+      "got": "continue",
+      "correct": false,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: Tests are still failing (hard metric), but we've only had 2 attempts and the score improved from 50 to 55 (+5 points). The hard constraint `tests_pass` has failed after 2 attempts, which is right at the threshold for pivot condition #4 (which says \"2+ attempts\"). However,",
+      "error": null
+    },
+    {
+      "scenario": "hard_metric_keeps_failing",
+      "trial": 2,
+      "expected": "pivot",
+      "got": "continue",
+      "correct": false,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: Only 2 attempts so far with scores improving (50 \u2192 55, +5 points). The average improvement is 2.5 points per attempt, which is below 5, but we've only had 2 attempts so the \"too many attempts with weak progress\" condition requires attempt_number >= 3. Scores are not decli",
+      "error": null
+    },
+    {
+      "scenario": "hard_metric_keeps_failing",
+      "trial": 3,
+      "expected": "pivot",
+      "got": "continue",
+      "correct": false,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: With only 2 attempts and scores improving from 50 to 55 (5 points improvement), the task is showing positive progress. While `tests_pass` is a hard metric that's failing, it has only failed for 2 attempts \u2014 right at the threshold but not yet exceeding it. The average impr",
+      "error": null
+    },
+    {
+      "scenario": "hard_metric_keeps_failing",
+      "trial": 4,
+      "expected": "pivot",
+      "got": "continue",
+      "correct": false,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: With only 2 attempts and scores improving from 50 to 55 (5 points), we haven't yet met the pivot conditions. The average improvement is 2.5 points per attempt, but we need at least 3 attempts to trigger the \"too many attempts with weak progress\" condition. We don't have 3",
+      "error": null
+    },
+    {
+      "scenario": "hard_metric_keeps_failing",
+      "trial": 5,
+      "expected": "pivot",
+      "got": "continue",
+      "correct": false,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The score improved from 50 to 55 (5 points) after just 2 attempts. While `tests_pass` is a hard metric that's failing, it has only failed for 2 attempts \u2014 right at the threshold but not yet clearly stuck. The score is trending upward (not declining or stuck), and 55 is ab",
+      "error": null
+    },
+    {
+      "scenario": "very_low_after_multiple",
+      "trial": 1,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Score is very low (35) after 2 attempts, meeting condition #5 (score < 40 after 2+ attempts). Additionally, the average improvement is only 2.5 points per attempt ((35-30)/2), which is weak progress. Continuing the current approach is unlikely to reach a passing score \u2014 a fu",
+      "error": null
+    },
+    {
+      "scenario": "very_low_after_multiple",
+      "trial": 2,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Very low score after multiple attempts (35 < 40 after 2 attempts), and weak progress \u2014 average improvement is only 2.5 points per attempt ((35 - 30) / 2 = 2.5), which is well below the 5 points/attempt threshold. The current approach is not making meaningful progress and a d",
+      "error": null
+    },
+    {
+      "scenario": "very_low_after_multiple",
+      "trial": 3,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Score is very low (35) after 2 attempts, meeting condition #5 (score < 40 after 2+ attempts). Additionally, the average improvement is only 2.5 points per attempt ((35-30)/2), which shows weak progress. Continuing the current approach is unlikely to reach a passing score \u2014 a",
+      "error": null
+    },
+    {
+      "scenario": "very_low_after_multiple",
+      "trial": 4,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Very low score after multiple attempts (35 < 40 after 2 attempts), and weak progress averaging only 2.5 points per attempt ((35 - 30) / 2 = 2.5, which is < 5). The current approach is not making meaningful progress toward a passing score.",
+      "error": null
+    },
+    {
+      "scenario": "very_low_after_multiple",
+      "trial": 5,
+      "expected": "pivot",
+      "got": "pivot",
+      "correct": true,
+      "raw_output": "DECISION: PIVOT\n\nREASON: Very low score after multiple attempts (35 < 40 after 2 attempts), and weak progress (average improvement = (35 - 30) / 2 = 2.5 points per attempt, well below the 5-point threshold). At this rate, it would take many more attempts to reach an acceptable score, suggesting the ",
+      "error": null
+    },
+    {
+      "scenario": "normal_improvement",
+      "trial": 1,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The task is making good progress. Score improved from 60 to 75 (+15 points) in one attempt, which is well above the 5-points-per-attempt threshold. No hard metrics are failing. There's no declining or stuck pattern (only 2 data points). The current score of 75 is well abo",
+      "error": null
+    },
+    {
+      "scenario": "normal_improvement",
+      "trial": 2,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The task is showing strong progress. Score improved from 60 to 75 (+15 points) in just one attempt, which is well above the 5-points-per-attempt threshold. No hard metrics are failing. The score is above 40. There's no declining or stuck pattern (only 2 data points, both ",
+      "error": null
+    },
+    {
+      "scenario": "normal_improvement",
+      "trial": 3,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The task is showing strong progress. Score improved from 60 to 75 (+15 points) in just one attempt, which is well above the 5-point-per-attempt threshold. No hard metrics are failing, scores are not declining or stuck, and the score is well above 40. The 15-point improvem",
+      "error": null
+    },
+    {
+      "scenario": "normal_improvement",
+      "trial": 4,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The task is showing strong progress. Score improved from 60 to 75 (+15 points) in just one attempt, which is well above the 5-points-per-attempt threshold. No hard metrics are failing. The score is above 40. There's no declining or stuck pattern (only 2 data points, both ",
+      "error": null
+    },
+    {
+      "scenario": "normal_improvement",
+      "trial": 5,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The task is showing solid progress \u2014 score improved from 60 to 75 (15 points in 1 attempt), no hard metrics are failing, and we're only on attempt 2. The average improvement is 7.5 points per attempt, which exceeds the 5-point threshold. None of the pivot conditions are m",
+      "error": null
+    },
+    {
+      "scenario": "first_attempt",
+      "trial": 1,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: This is only the first attempt with a score of 50/100. None of the pivot conditions are met: there's only 1 attempt (need \u22653 for weak progress check), no 3-score history for decline/stuck checks, no hard metric failures after 2+ attempts, and the score is \u226540. There's ple",
+      "error": null
+    },
+    {
+      "scenario": "first_attempt",
+      "trial": 2,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: This is only the first attempt with a score of 50/100. None of the pivot conditions are met: there's only 1 attempt (need \u22653 for weak progress check), no 3-score history to check for decline or stagnation, no hard metrics failing after 2+ attempts, and the score is \u226540. T",
+      "error": null
+    },
+    {
+      "scenario": "first_attempt",
+      "trial": 3,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: This is only the first attempt with a score of 50/100. None of the pivot conditions are met: there's only 1 attempt (need \u22653 for weak progress check), no 3-score history to check for decline or stagnation, no hard metric failures after 2+ attempts, and the score is above ",
+      "error": null
+    },
+    {
+      "scenario": "first_attempt",
+      "trial": 4,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: This is only the first attempt with a score of 50/100. None of the pivot conditions are met: (1) only 1 attempt so the \"too many attempts\" rule doesn't apply, (2) not enough scores to detect decline or stagnation, (3) no hard metrics failing, (4) score is not below 40 aft",
+      "error": null
+    },
+    {
+      "scenario": "first_attempt",
+      "trial": 5,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: This is only attempt 1 with a score of 50/100. None of the pivot conditions are met: there aren't enough attempts (need \u22653) to evaluate average improvement, there aren't 3 scores to check for decline or stagnation, no hard metrics are failing, and the score isn't below 40",
+      "error": null
+    },
+    {
+      "scenario": "sufficient_improvement",
+      "trial": 1,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The score history shows consistent improvement: 40 \u2192 50 \u2192 60, gaining 10 points per attempt. The average improvement is (60 - 40) / 3 \u2248 6.7 points per attempt, which exceeds the 5-point threshold. No hard metrics are failing, scores are not declining, and they're not stuc",
+      "error": null
+    },
+    {
+      "scenario": "sufficient_improvement",
+      "trial": 2,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The task shows consistent improvement across all 3 attempts (40 \u2192 50 \u2192 60), gaining 10 points per attempt. The average improvement is (60 - 40) / 3 \u2248 6.7 points per attempt, which exceeds the 5-point threshold. No hard metrics are failing, scores are not declining or stuc",
+      "error": null
+    },
+    {
+      "scenario": "sufficient_improvement",
+      "trial": 3,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The score history shows consistent improvement: 40 \u2192 50 \u2192 60, gaining 10 points per attempt. The average improvement is (60 - 40) / 3 \u2248 6.7 points per attempt, which exceeds the 5-point threshold. No hard metrics are failing, scores are not declining or stuck, and the sco",
+      "error": null
+    },
+    {
+      "scenario": "sufficient_improvement",
+      "trial": 4,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The score history shows consistent improvement: 40 \u2192 50 \u2192 60, gaining 10 points per attempt. The average improvement is (60 - 40) / 3 \u2248 6.7 points per attempt, which exceeds the 5-point threshold. No hard metrics are failing, scores are not declining or stuck, and the sco",
+      "error": null
+    },
+    {
+      "scenario": "sufficient_improvement",
+      "trial": 5,
+      "expected": "continue",
+      "got": "continue",
+      "correct": true,
+      "raw_output": "DECISION: CONTINUE\n\nREASON: The task shows consistent improvement across all 3 attempts (40 \u2192 50 \u2192 60), with an average improvement of ~6.7 points per attempt ((60-40)/3), which exceeds the 5-point threshold. No hard metrics are failing, scores are not declining, and they're not stuck (20-point spre",
+      "error": null
+    }
+  ]
+}
