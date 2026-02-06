@@ -1,0 +1,750 @@
+{
+  "experiment": "exp6_planner_improved",
+  "round": 2,
+  "round1_action_accuracy": 0.917,
+  "round1_hedge": "0/3",
+  "v2": {
+    "action_accuracy": 0.9166666666666666,
+    "passed": false,
+    "total": 36,
+    "action_correct": 33,
+    "hedge_correct": 3,
+    "hedge_total": 3
+  },
+  "results": [
+    {
+      "scenario": "execute",
+      "trial": 1,
+      "expected_action": "execute",
+      "got_action": "execute",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "execute",
+        "target": "T001",
+        "reason": "T001 is ready to execute and its dependency T002 (research auth libraries) is done with a clear conclusion to use passport.js. Proceeding with implementation of the login page."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"execute\",\n    \"target\": \"T001\",\n    \"reason\": \"T001 is ready to execute and its dependency T002 (research auth libraries) is done with a clear conclusion to use passport.js. Proceeding with implementation of the login page.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "execute",
+      "trial": 2,
+      "expected_action": "execute",
+      "got_action": "execute",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "execute",
+        "target": "T001",
+        "reason": "T001 is ready to execute and its dependency T002 (research auth libraries) is done with a clear recommendation to use passport.js. No blockers remain."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"execute\",\n    \"target\": \"T001\",\n    \"reason\": \"T001 is ready to execute and its dependency T002 (research auth libraries) is done with a clear recommendation to use passport.js. No blockers remain.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "execute",
+      "trial": 3,
+      "expected_action": "execute",
+      "got_action": "execute",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "execute",
+        "target": "T001",
+        "reason": "T001 is ready to execute and its dependency T002 (research auth libraries) is done with a clear recommendation to use passport.js. No blockers remain."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"execute\",\n    \"target\": \"T001\",\n    \"reason\": \"T001 is ready to execute and its dependency T002 (research auth libraries) is done with a clear recommendation to use passport.js. No blockers remain.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "explore",
+      "trial": 1,
+      "expected_action": "explore",
+      "got_action": "explore",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "explore",
+        "target": "T001",
+        "reason": "No tasks have been executed yet. We need to start by exploring the codebase to understand the performance bottleneck before we can plan any fixes."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"explore\",\n    \"target\": \"T001\",\n    \"reason\": \"No tasks have been executed yet. We need to start by exploring the codebase to understand the performance bottleneck before we can plan any fixes.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "explore",
+      "trial": 2,
+      "expected_action": "explore",
+      "got_action": "explore",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "explore",
+        "target": "T001",
+        "reason": "No tasks have been executed yet. We need to start by exploring the codebase to understand the performance bottleneck before we can plan any fixes."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"explore\",\n    \"target\": \"T001\",\n    \"reason\": \"No tasks have been executed yet. We need to start by exploring the codebase to understand the performance bottleneck before we can plan any fixes.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "explore",
+      "trial": 3,
+      "expected_action": "explore",
+      "got_action": "explore",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "explore",
+        "target": "T001",
+        "reason": "No tasks have been executed yet. We need to start by exploring the codebase to understand the performance bottleneck before we can plan any fixes."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"explore\",\n    \"target\": \"T001\",\n    \"reason\": \"No tasks have been executed yet. We need to start by exploring the codebase to understand the performance bottleneck before we can plan any fixes.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "parallel_execute",
+      "trial": 1,
+      "expected_action": "parallel_execute",
+      "got_action": "parallel_execute",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": true,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "parallel_execute",
+        "task_ids": [
+          "T001",
+          "T002"
+        ],
+        "reason": "T001 and T002 are independent EXPLORE tasks with no dependencies between them. Running them in parallel maximizes efficiency and unblocks T003 (which depends on both) as soon as possible."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"parallel_execute\",\n    \"task_ids\": [\"T001\", \"T002\"],\n    \"reason\": \"T001 and T002 are independent EXPLORE tasks with no dependencies between them. Running them in parallel maximizes efficiency and unblocks T003 (which depends on both) as soon as possible.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "parallel_execute",
+      "trial": 2,
+      "expected_action": "parallel_execute",
+      "got_action": "parallel_execute",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": true,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "parallel_execute",
+        "task_ids": [
+          "T001",
+          "T002"
+        ],
+        "reason": "T001 and T002 are independent EXPLORE tasks with no dependencies between them. Running them in parallel will unblock T003 faster."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"parallel_execute\",\n    \"task_ids\": [\"T001\", \"T002\"],\n    \"reason\": \"T001 and T002 are independent EXPLORE tasks with no dependencies between them. Running them in parallel will unblock T003 faster.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "parallel_execute",
+      "trial": 3,
+      "expected_action": "parallel_execute",
+      "got_action": "parallel_execute",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": true,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "parallel_execute",
+        "task_ids": [
+          "T001",
+          "T002"
+        ],
+        "reason": "T001 and T002 are independent EXPLORE tasks with no dependencies between them. Running them in parallel will unblock T003 faster."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"parallel_execute\",\n    \"task_ids\": [\"T001\", \"T002\"],\n    \"reason\": \"T001 and T002 are independent EXPLORE tasks with no dependencies between them. Running them in parallel will unblock T003 faster.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "create",
+      "trial": 1,
+      "expected_action": "create",
+      "got_action": "create",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "create",
+        "reason": "Exploration revealed that rate limiting is needed in addition to JWT auth. Creating a new task to handle rate limiting implementation.",
+        "new_tasks": [
+          {
+            "id": "T002",
+            "type": "IMPLEMENT",
+            "title": "Implement rate limiting",
+            "description": "Add rate limiting support as discovered during T001 exploration. This was not in the original plan but is needed alongside JWT auth.",
+            "depends_on": []
+          }
+        ]
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"create\",\n    \"reason\": \"Exploration revealed that rate limiting is needed in addition to JWT auth. Creating a new task to handle rate limiting implementation.\",\n    \"new_tasks\": [\n        {\n            \"id\": \"T002\",\n            \"type\": \"IMPLEMENT\",\n            \"title\": \"Implement rate limiting\",\n            \"description\": \"Add rate limiting support as discovered during T001 exploration. This was not in the original plan but is needed alongside JWT auth.\",\n            \"",
+      "error": null
+    },
+    {
+      "scenario": "create",
+      "trial": 2,
+      "expected_action": "create",
+      "got_action": "create",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "create",
+        "reason": "Exploration of T001 discovered that rate limiting is needed in addition to JWT auth. Creating a new task to handle rate limiting implementation.",
+        "new_tasks": [
+          {
+            "id": "T002",
+            "type": "IMPLEMENT",
+            "title": "Implement rate limiting",
+            "description": "Add rate limiting support, discovered as a requirement during auth options exploration (T001)",
+            "depends_on": []
+          }
+        ]
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"create\",\n    \"reason\": \"Exploration of T001 discovered that rate limiting is needed in addition to JWT auth. Creating a new task to handle rate limiting implementation.\",\n    \"new_tasks\": [\n        {\n            \"id\": \"T002\",\n            \"type\": \"IMPLEMENT\",\n            \"title\": \"Implement rate limiting\",\n            \"description\": \"Add rate limiting support, discovered as a requirement during auth options exploration (T001)\",\n            \"depends_on\": []\n        }\n   ",
+      "error": null
+    },
+    {
+      "scenario": "create",
+      "trial": 3,
+      "expected_action": "create",
+      "got_action": "create",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "create",
+        "reason": "Exploration of T001 discovered that rate limiting is needed in addition to JWT auth. Creating a new task to handle rate limiting implementation.",
+        "new_tasks": [
+          {
+            "id": "T002",
+            "type": "IMPLEMENT",
+            "title": "Implement rate limiting",
+            "description": "Add rate limiting capability, discovered as a requirement during auth exploration (T001)",
+            "depends_on": []
+          }
+        ]
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"create\",\n    \"reason\": \"Exploration of T001 discovered that rate limiting is needed in addition to JWT auth. Creating a new task to handle rate limiting implementation.\",\n    \"new_tasks\": [\n        {\n            \"id\": \"T002\",\n            \"type\": \"IMPLEMENT\",\n            \"title\": \"Implement rate limiting\",\n            \"description\": \"Add rate limiting capability, discovered as a requirement during auth exploration (T001)\",\n            \"depends_on\": []\n        }\n    ]\n}\n",
+      "error": null
+    },
+    {
+      "scenario": "modify",
+      "trial": 1,
+      "expected_action": "modify",
+      "got_action": "modify",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "modify",
+        "target": "T001",
+        "reason": "T002's exploration found the project already uses session-based auth with existing session middleware. Implementing JWT would conflict with the established pattern. T001 should be modified to align with the project's existing architecture.",
+        "modification": "Change from 'Add JWT authentication' to 'Add session-based authentication using existing session middleware'. Update approach to leverage the session middleware already in place (discovered by T002) instead of introducing JWT."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"modify\",\n    \"target\": \"T001\",\n    \"reason\": \"T002's exploration found the project already uses session-based auth with existing session middleware. Implementing JWT would conflict with the established pattern. T001 should be modified to align with the project's existing architecture.\",\n    \"modification\": \"Change from 'Add JWT authentication' to 'Add session-based authentication using existing session middleware'. Update approach to leverage the session middleware alr",
+      "error": null
+    },
+    {
+      "scenario": "modify",
+      "trial": 2,
+      "expected_action": "modify",
+      "got_action": "modify",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "modify",
+        "target": "T001",
+        "reason": "T002's exploration found that the project already uses session-based auth with existing session middleware. Implementing JWT would conflict with the established pattern. T001 should be modified to align with the project's existing architecture.",
+        "modification": "Change T001 from 'Add JWT authentication' to 'Add session-based authentication using existing session middleware'. Update the implementation approach to leverage the project's existing session infrastructure discovered by T002, rather than introducing JWT which would conflict with the current auth pattern."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"modify\",\n    \"target\": \"T001\",\n    \"reason\": \"T002's exploration found that the project already uses session-based auth with existing session middleware. Implementing JWT would conflict with the established pattern. T001 should be modified to align with the project's existing architecture.\",\n    \"modification\": \"Change T001 from 'Add JWT authentication' to 'Add session-based authentication using existing session middleware'. Update the implementation approach to levera",
+      "error": null
+    },
+    {
+      "scenario": "modify",
+      "trial": 3,
+      "expected_action": "modify",
+      "got_action": "modify",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "modify",
+        "target": "T001",
+        "reason": "T002's exploration found the project already uses session-based auth with existing session middleware. Implementing JWT would conflict with the established pattern. T001 should be modified to align with the project's existing architecture.",
+        "modification": "Change T001 from 'Add JWT authentication' to 'Add session-based authentication using existing session middleware'. Update the implementation approach to leverage the project's existing session infrastructure discovered in T002."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"modify\",\n    \"target\": \"T001\",\n    \"reason\": \"T002's exploration found the project already uses session-based auth with existing session middleware. Implementing JWT would conflict with the established pattern. T001 should be modified to align with the project's existing architecture.\",\n    \"modification\": \"Change T001 from 'Add JWT authentication' to 'Add session-based authentication using existing session middleware'. Update the implementation approach to leverage th",
+      "error": null
+    },
+    {
+      "scenario": "delete",
+      "trial": 1,
+      "expected_action": "delete",
+      "got_action": "delete",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "delete",
+        "target": "T002",
+        "reason": "T002 (cursor-based pagination) is a duplicate of T001 which already implemented pagination. No longer needed."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"delete\",\n    \"target\": \"T002\",\n    \"reason\": \"T002 (cursor-based pagination) is a duplicate of T001 which already implemented pagination. No longer needed.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "delete",
+      "trial": 2,
+      "expected_action": "delete",
+      "got_action": "delete",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "delete",
+        "target": "T002",
+        "reason": "T002 (cursor-based pagination) is a duplicate of T001 which already implemented pagination. No longer needed."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"delete\",\n    \"target\": \"T002\",\n    \"reason\": \"T002 (cursor-based pagination) is a duplicate of T001 which already implemented pagination. No longer needed.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "delete",
+      "trial": 3,
+      "expected_action": "delete",
+      "got_action": "delete",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "delete",
+        "target": "T002",
+        "reason": "T002 (cursor-based pagination) is a duplicate of T001 which already implemented pagination. No longer needed."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"delete\",\n    \"target\": \"T002\",\n    \"reason\": \"T002 (cursor-based pagination) is a duplicate of T001 which already implemented pagination. No longer needed.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "skip",
+      "trial": 1,
+      "expected_action": "skip",
+      "got_action": "parallel_execute",
+      "action_correct": false,
+      "target_correct": false,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "parallel_execute",
+        "task_ids": [
+          "T002"
+        ],
+        "reason": "The payment API is temporarily unavailable, so T001 is blocked. T002 (Add user profile page) is ready and has no external dependencies, so we should execute it now. We skip T001 for the moment and hedge by exploring alternatives for when the API comes back."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"parallel_execute\",\n    \"task_ids\": [\"T002\"],\n    \"reason\": \"The payment API is temporarily unavailable, so T001 is blocked. T002 (Add user profile page) is ready and has no external dependencies, so we should execute it now. We skip T001 for the moment and hedge by exploring alternatives for when the API comes back.\"\n}\n```\n\nWait, let me reconsider. `parallel_execute` requires multiple task_ids. Let me restructure:\n\n```json\n{\n    \"action\": \"execute\",\n    \"target\": \"T002",
+      "error": null
+    },
+    {
+      "scenario": "skip",
+      "trial": 2,
+      "expected_action": "skip",
+      "got_action": "parallel_execute",
+      "action_correct": false,
+      "target_correct": false,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "parallel_execute",
+        "task_ids": [
+          "T002"
+        ],
+        "reason": "The payment API is temporarily unavailable, so T001 is blocked. T002 (Add user profile page) is ready and independent, so we should execute it now. We skip T001 for the moment rather than blocking the entire workflow."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"parallel_execute\",\n    \"task_ids\": [\"T002\"],\n    \"reason\": \"The payment API is temporarily unavailable, so T001 is blocked. T002 (Add user profile page) is ready and independent, so we should execute it now. We skip T001 for the moment rather than blocking the entire workflow.\"\n}\n```\n\nWait, let me reconsider \u2014 `parallel_execute` requires multiple task IDs. Let me also handle T001 properly.\n\n```json\n{\n    \"action\": \"skip\",\n    \"target\": \"T001\",\n    \"reason\": \"Payment AP",
+      "error": null
+    },
+    {
+      "scenario": "skip",
+      "trial": 3,
+      "expected_action": "skip",
+      "got_action": "parallel_execute",
+      "action_correct": false,
+      "target_correct": false,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "parallel_execute",
+        "task_ids": [
+          "T002"
+        ],
+        "reason": "The payment API is temporarily unavailable, so T001 is blocked. We should skip T001 for now and execute T002 (Add user profile page) which has no external dependencies and is ready to go."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"parallel_execute\",\n    \"task_ids\": [\"T002\"],\n    \"reason\": \"The payment API is temporarily unavailable, so T001 is blocked. We should skip T001 for now and execute T002 (Add user profile page) which has no external dependencies and is ready to go.\"\n}\n```\n\nWait, let me reconsider \u2014 `parallel_execute` requires multiple task_ids. Let me also handle T001 properly:\n\n```json\n{\n    \"action\": \"skip\",\n    \"target\": \"T001\",\n    \"reason\": \"Payment API is temporarily unavailable. ",
+      "error": null
+    },
+    {
+      "scenario": "ask",
+      "trial": 1,
+      "expected_action": "ask",
+      "got_action": "ask",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "ask",
+        "target": "T001",
+        "reason": "The export format is a user preference decision - both CSV and JSON are valid approaches with different trade-offs, and only the user can decide which fits their needs. The agent cannot autonomously determine this.",
+        "question": "For the data export feature, which format should we use? CSV (simpler, widely supported by spreadsheets) or JSON (more structured, better for programmatic use)? Or should we support both?"
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"ask\",\n    \"target\": \"T001\",\n    \"reason\": \"The export format is a user preference decision - both CSV and JSON are valid approaches with different trade-offs, and only the user can decide which fits their needs. The agent cannot autonomously determine this.\",\n    \"question\": \"For the data export feature, which format should we use? CSV (simpler, widely supported by spreadsheets) or JSON (more structured, better for programmatic use)? Or should we support both?\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "ask",
+      "trial": 2,
+      "expected_action": "ask",
+      "got_action": "ask",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "ask",
+        "target": "T001",
+        "reason": "The task requires a data export feature but doesn't specify the format. This is a user preference/business decision that the agent cannot make autonomously \u2014 both CSV and JSON are valid choices with different trade-offs, and only the user knows which fits their use case.",
+        "question": "Which export format should we implement for the data export feature? CSV (simpler, widely supported by spreadsheets) or JSON (more structured, better for programmatic use)? Or should we support both?"
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"ask\",\n    \"target\": \"T001\",\n    \"reason\": \"The task requires a data export feature but doesn't specify the format. This is a user preference/business decision that the agent cannot make autonomously \u2014 both CSV and JSON are valid choices with different trade-offs, and only the user knows which fits their use case.\",\n    \"question\": \"Which export format should we implement for the data export feature? CSV (simpler, widely supported by spreadsheets) or JSON (more structur",
+      "error": null
+    },
+    {
+      "scenario": "ask",
+      "trial": 3,
+      "expected_action": "ask",
+      "got_action": "ask",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "ask",
+        "target": "T001",
+        "reason": "The task requires a data export feature but doesn't specify the format. This is a user preference/business decision that the agent cannot make autonomously - both CSV and JSON are valid choices with different trade-offs, and only the user knows which fits their use case.",
+        "question": "Which export format should the data export feature use? CSV (simpler, widely supported by spreadsheets) or JSON (more structured, better for programmatic use)? Or should we support both?"
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"ask\",\n    \"target\": \"T001\",\n    \"reason\": \"The task requires a data export feature but doesn't specify the format. This is a user preference/business decision that the agent cannot make autonomously - both CSV and JSON are valid choices with different trade-offs, and only the user knows which fits their use case.\",\n    \"question\": \"Which export format should the data export feature use? CSV (simpler, widely supported by spreadsheets) or JSON (more structured, better fo",
+      "error": null
+    },
+    {
+      "scenario": "hedge",
+      "trial": 1,
+      "expected_action": "hedge",
+      "got_action": "hedge",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "hedge",
+        "target": "T001",
+        "reason": "T001 relies on Redis being available in production, which is a technical risk the agent can autonomously mitigate by researching and preparing fallback caching strategies without needing user input.",
+        "failure_assumptions": "Redis may not be available, configured, or cost-effective in the production environment. Connection failures, memory limits, or infrastructure constraints could prevent Redis from working as expected.",
+        "new_tasks": [
+          {
+            "id": "T002",
+            "type": "EXPLORE",
+            "title": "Research alternative caching strategies as fallback for Redis",
+            "description": "Investigate in-memory caching (e.g., lru_cache, cachetools) and file-based caching as fallback options in case Redis is unavailable in production. Evaluate trade-offs (persistence, performance, memory usage, multi-process support) and determine how to implement a cache abstraction layer that can swap backends."
+          }
+        ]
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"hedge\",\n    \"target\": \"T001\",\n    \"reason\": \"T001 relies on Redis being available in production, which is a technical risk the agent can autonomously mitigate by researching and preparing fallback caching strategies without needing user input.\",\n    \"failure_assumptions\": \"Redis may not be available, configured, or cost-effective in the production environment. Connection failures, memory limits, or infrastructure constraints could prevent Redis from working as expected",
+      "error": null
+    },
+    {
+      "scenario": "hedge",
+      "trial": 2,
+      "expected_action": "hedge",
+      "got_action": "hedge",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "hedge",
+        "target": "T001",
+        "reason": "T001 relies on Redis being available in production, which is a technical risk the agent can autonomously mitigate by researching and preparing alternative caching solutions as a fallback.",
+        "failure_assumptions": "Redis may not be available, configured, or cost-effective in the production environment, causing the caching layer to fail entirely.",
+        "new_tasks": [
+          {
+            "id": "T002",
+            "type": "EXPLORE",
+            "title": "Research in-memory and file-based caching as fallback alternatives to Redis",
+            "description": "Investigate in-memory caching (e.g., node-cache, lru-cache) and file-based caching as production-ready alternatives in case Redis is unavailable. Evaluate trade-offs (persistence, scalability, complexity) and identify how to implement a cache adapter pattern that allows swapping backends without changing application code."
+          }
+        ]
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"hedge\",\n    \"target\": \"T001\",\n    \"reason\": \"T001 relies on Redis being available in production, which is a technical risk the agent can autonomously mitigate by researching and preparing alternative caching solutions as a fallback.\",\n    \"failure_assumptions\": \"Redis may not be available, configured, or cost-effective in the production environment, causing the caching layer to fail entirely.\",\n    \"new_tasks\": [\n        {\n            \"id\": \"T002\",\n            \"type\": ",
+      "error": null
+    },
+    {
+      "scenario": "hedge",
+      "trial": 3,
+      "expected_action": "hedge",
+      "got_action": "hedge",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "hedge",
+        "target": "T001",
+        "reason": "T001 relies on Redis being available in production, which is a technical risk the agent can autonomously mitigate by researching and preparing fallback caching strategies without user input.",
+        "failure_assumptions": "Redis may not be available, properly configured, or cost-effective in the production environment. Connection failures, memory limits, or infrastructure constraints could make Redis impractical.",
+        "new_tasks": [
+          {
+            "id": "T002",
+            "type": "EXPLORE",
+            "title": "Research in-memory and file-based caching as fallback alternatives to Redis",
+            "description": "Investigate in-memory caching (e.g., node-cache, lru-cache) and file-based caching as production-ready fallback options in case Redis is unavailable. Evaluate trade-offs (performance, persistence, scalability) and identify how to implement a cache adapter pattern that allows swapping backends."
+          }
+        ]
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"hedge\",\n    \"target\": \"T001\",\n    \"reason\": \"T001 relies on Redis being available in production, which is a technical risk the agent can autonomously mitigate by researching and preparing fallback caching strategies without user input.\",\n    \"failure_assumptions\": \"Redis may not be available, properly configured, or cost-effective in the production environment. Connection failures, memory limits, or infrastructure constraints could make Redis impractical.\",\n    \"new_ta",
+      "error": null
+    },
+    {
+      "scenario": "pivot_research",
+      "trial": 1,
+      "expected_action": "pivot_research",
+      "got_action": "pivot_research",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "pivot_research",
+        "target": "T001",
+        "current_approach": "Using library X for data processing",
+        "blocker": "Library X has been abandoned (last commit 2 years ago) and doesn't support Python 3.11+",
+        "new_direction": "Switch to library Y, the maintained alternative discovered during research",
+        "new_tasks": [
+          {
+            "type": "EXPLORE",
+            "description": "Research library Y: verify it's actively maintained, supports Python 3.11+, and covers the data processing features needed"
+          }
+        ],
+        "reason": "Research confirms library X is not viable (abandoned, no Python 3.11+ support). Library Y was identified as a maintained alternative \u2014 need to verify it meets all requirements before proceeding with implementation planning."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"pivot_research\",\n    \"target\": \"T001\",\n    \"current_approach\": \"Using library X for data processing\",\n    \"blocker\": \"Library X has been abandoned (last commit 2 years ago) and doesn't support Python 3.11+\",\n    \"new_direction\": \"Switch to library Y, the maintained alternative discovered during research\",\n    \"new_tasks\": [\n        {\n            \"type\": \"EXPLORE\",\n            \"description\": \"Research library Y: verify it's actively maintained, supports Python 3.11+, an",
+      "error": null
+    },
+    {
+      "scenario": "pivot_research",
+      "trial": 2,
+      "expected_action": "pivot_research",
+      "got_action": "pivot_research",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "pivot_research",
+        "target": "T001",
+        "current_approach": "Using library X for data processing",
+        "blocker": "Library X has been abandoned (last commit 2 years ago) and doesn't support Python 3.11+",
+        "new_direction": "Switch to library Y, the maintained alternative identified during research",
+        "new_tasks": [
+          {
+            "type": "EXPLORE",
+            "description": "Research library Y: verify it's actively maintained, supports Python 3.11+, and covers the data processing features needed"
+          }
+        ],
+        "reason": "Research confirmed library X is not viable (abandoned, no Python 3.11+ support). Library Y was identified as a maintained alternative \u2014 need to verify it meets all requirements before proceeding with implementation."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"pivot_research\",\n    \"target\": \"T001\",\n    \"current_approach\": \"Using library X for data processing\",\n    \"blocker\": \"Library X has been abandoned (last commit 2 years ago) and doesn't support Python 3.11+\",\n    \"new_direction\": \"Switch to library Y, the maintained alternative identified during research\",\n    \"new_tasks\": [\n        {\n            \"type\": \"EXPLORE\",\n            \"description\": \"Research library Y: verify it's actively maintained, supports Python 3.11+, an",
+      "error": null
+    },
+    {
+      "scenario": "pivot_research",
+      "trial": 3,
+      "expected_action": "pivot_research",
+      "got_action": "pivot_research",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "pivot_research",
+        "target": "T001",
+        "current_approach": "Using library X for data processing",
+        "blocker": "Library X has been abandoned (last commit 2 years ago) and doesn't support Python 3.11+",
+        "new_direction": "Switch to library Y, which is a maintained alternative discovered during research",
+        "new_tasks": [
+          {
+            "type": "EXPLORE",
+            "description": "Research library Y: verify it supports Python 3.11+, check API compatibility with our needs, review documentation and community activity"
+          }
+        ],
+        "reason": "Research confirmed library X is not viable (abandoned, no Python 3.11+ support). Library Y was identified as a maintained alternative and needs evaluation before we can proceed with implementation."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"pivot_research\",\n    \"target\": \"T001\",\n    \"current_approach\": \"Using library X for data processing\",\n    \"blocker\": \"Library X has been abandoned (last commit 2 years ago) and doesn't support Python 3.11+\",\n    \"new_direction\": \"Switch to library Y, which is a maintained alternative discovered during research\",\n    \"new_tasks\": [\n        {\n            \"type\": \"EXPLORE\",\n            \"description\": \"Research library Y: verify it supports Python 3.11+, check API compatib",
+      "error": null
+    },
+    {
+      "scenario": "pivot_iteration",
+      "trial": 1,
+      "expected_action": "pivot_iteration",
+      "got_action": "pivot_iteration",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "pivot_iteration",
+        "target": "T001",
+        "attempt_count": 3,
+        "best_score": 34,
+        "failure_pattern": "Small incremental improvements (30\u219232\u219234) but fundamentally limited by O(n\u00b2) approach. Three attempts confirm the current algorithm structure cannot reach acceptable performance.",
+        "new_approach": "Abandon O(n\u00b2) approach entirely. Restructure using a more efficient algorithm \u2014 consider indexing-based approaches (hash map, trie, or inverted index), divide-and-conquer, or leveraging sorted data with binary search to achieve O(n log n) or better. Explore the codebase first to understand data structures and access patterns before selecting the specific algorithm."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"pivot_iteration\",\n    \"target\": \"T001\",\n    \"attempt_count\": 3,\n    \"best_score\": 34,\n    \"failure_pattern\": \"Small incremental improvements (30\u219232\u219234) but fundamentally limited by O(n\u00b2) approach. Three attempts confirm the current algorithm structure cannot reach acceptable performance.\",\n    \"new_approach\": \"Abandon O(n\u00b2) approach entirely. Restructure using a more efficient algorithm \u2014 consider indexing-based approaches (hash map, trie, or inverted index), divide-an",
+      "error": null
+    },
+    {
+      "scenario": "pivot_iteration",
+      "trial": 2,
+      "expected_action": "pivot_iteration",
+      "got_action": "pivot_iteration",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "pivot_iteration",
+        "target": "T001",
+        "attempt_count": 3,
+        "best_score": 34,
+        "failure_pattern": "Small incremental improvements (30\u219232\u219234) but fundamentally limited by O(n\u00b2) approach. Three attempts confirm the current algorithm cannot reach acceptable performance through tuning alone.",
+        "new_approach": "Abandon O(n\u00b2) approach entirely. Restructure using a fundamentally different algorithm \u2014 e.g., hash-based lookup (O(n)), divide-and-conquer, or index/tree-based search (O(n log n)) depending on the data characteristics. Explore the codebase to understand data structure constraints before selecting the specific algorithm.",
+        "new_tasks": [
+          {
+            "id": "T001a",
+            "type": "EXPLORE",
+            "title": "Analyze data structures and access patterns to determine optimal search algorithm",
+            "description": "Examine the input data types, sizes, ordering, and how search results are consumed downstream. This determines whether hash-based, tree-based, or sorted-array binary search is most appropriate."
+          },
+          {
+            "id": "T001b",
+            "type": "IMPLEMENT",
+            "title": "Rewrite search using sub-quadratic algorithm based on exploration findings",
+            "description": "Replace the O(n\u00b2) search with the algorithm selected from T001a exploration. Target: O(n) or O(n log n) complexity.",
+            "depends_on": [
+              "T001a"
+            ]
+          }
+        ]
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"pivot_iteration\",\n    \"target\": \"T001\",\n    \"attempt_count\": 3,\n    \"best_score\": 34,\n    \"failure_pattern\": \"Small incremental improvements (30\u219232\u219234) but fundamentally limited by O(n\u00b2) approach. Three attempts confirm the current algorithm cannot reach acceptable performance through tuning alone.\",\n    \"new_approach\": \"Abandon O(n\u00b2) approach entirely. Restructure using a fundamentally different algorithm \u2014 e.g., hash-based lookup (O(n)), divide-and-conquer, or index/",
+      "error": null
+    },
+    {
+      "scenario": "pivot_iteration",
+      "trial": 3,
+      "expected_action": "pivot_iteration",
+      "got_action": "pivot_iteration",
+      "action_correct": true,
+      "target_correct": true,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "pivot_iteration",
+        "target": "T001",
+        "attempt_count": 3,
+        "best_score": 34,
+        "failure_pattern": "Small incremental improvements (30\u219232\u219234) but fundamentally limited by O(n\u00b2) approach. Three attempts confirm the current algorithm cannot reach acceptable performance through tuning alone.",
+        "new_approach": "Replace O(n\u00b2) algorithm with a fundamentally different approach \u2014 investigate O(n log n) or O(n) alternatives such as hash-based lookup, sorting + two-pointer, divide-and-conquer, or index/tree-based search depending on the specific problem structure. Explore the codebase first to understand data characteristics and constraints before selecting the optimal algorithm."
+      },
+      "raw_text": "\n\n```json\n{\n    \"action\": \"pivot_iteration\",\n    \"target\": \"T001\",\n    \"attempt_count\": 3,\n    \"best_score\": 34,\n    \"failure_pattern\": \"Small incremental improvements (30\u219232\u219234) but fundamentally limited by O(n\u00b2) approach. Three attempts confirm the current algorithm cannot reach acceptable performance through tuning alone.\",\n    \"new_approach\": \"Replace O(n\u00b2) algorithm with a fundamentally different approach \u2014 investigate O(n log n) or O(n) alternatives such as hash-based lookup, sorting + two",
+      "error": null
+    },
+    {
+      "scenario": "done",
+      "trial": 1,
+      "expected_action": "done",
+      "got_action": "done",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "done",
+        "reason": "All tasks are complete: login page (T001, score 95/100), registration page (T002, score 92/100), and security review (T003, no issues found). The goal of adding user authentication with login and registration has been fully achieved."
+      },
+      "raw_text": "```json\n{\n    \"action\": \"done\",\n    \"reason\": \"All tasks are complete: login page (T001, score 95/100), registration page (T002, score 92/100), and security review (T003, no issues found). The goal of adding user authentication with login and registration has been fully achieved.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "done",
+      "trial": 2,
+      "expected_action": "done",
+      "got_action": "done",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "done",
+        "reason": "All tasks are complete: login page (T001, score 95/100), registration page (T002, score 92/100), and security review (T003, no issues found). The goal of adding user authentication with login and registration has been fully achieved."
+      },
+      "raw_text": "```json\n{\n    \"action\": \"done\",\n    \"reason\": \"All tasks are complete: login page (T001, score 95/100), registration page (T002, score 92/100), and security review (T003, no issues found). The goal of adding user authentication with login and registration has been fully achieved.\"\n}\n```",
+      "error": null
+    },
+    {
+      "scenario": "done",
+      "trial": 3,
+      "expected_action": "done",
+      "got_action": "done",
+      "action_correct": true,
+      "target_correct": null,
+      "task_ids_correct": null,
+      "json_parsed": true,
+      "json_obj": {
+        "action": "done",
+        "reason": "All tasks are complete: login page (T001, score 95/100), registration page (T002, score 92/100), and security review (T003, no issues found). The goal of adding user authentication with login and registration has been fully achieved."
+      },
+      "raw_text": "```json\n{\n    \"action\": \"done\",\n    \"reason\": \"All tasks are complete: login page (T001, score 95/100), registration page (T002, score 92/100), and security review (T003, no issues found). The goal of adding user authentication with login and registration has been fully achieved.\"\n}\n```",
+      "error": null
+    }
+  ]
+}

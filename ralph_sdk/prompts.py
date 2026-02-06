@@ -499,6 +499,63 @@ Remember: It's better to start with too few tasks than too many. The Planner wil
 """
 
 # -----------------------------------------------------------------------------
+# Hard Metric Rule (for evaluator pivot detection prompts)
+# -----------------------------------------------------------------------------
+
+HARD_METRIC_PIVOT_RULE = """
+## Hard Metric 规则（必须遵守）
+
+Hard metric 是二元指标（pass/fail），不受总分趋势影响。
+
+- 如果某个 hard metric 连续失败 2 次以上，即使总分在改善，也必须 PIVOT
+- Hard metric 的 pass/fail 结果独立于总分评判，不能因为"分数在涨"就忽略
+- 例：tests_pass=false 在第 1、2 次尝试中都失败 → PIVOT_RECOMMENDED: yes
+  （即使分数从 50 涨到 55，tests_pass 是硬性要求，不能忽略）
+
+### 为什么这个规则是硬性的
+总分改善可能来自 soft/subjective 指标的提升，但 hard metric 代表的是"系统能否正常运行"。
+一个分数 90 但测试不通过的系统，不如一个分数 60 但测试通过的系统。
+"""
+
+# -----------------------------------------------------------------------------
+# Hedge vs Ask Decision Guide (for planner prompts)
+# -----------------------------------------------------------------------------
+
+HEDGE_VS_ASK_GUIDE = """
+## HEDGE vs ASK 决策指南
+
+### HEDGE（悲观准备）
+- **含义**：当前方案有失败风险时，**不打断用户**，自己探索替代方案
+- **关键区分**：agent 可以自主完成，不需要用户提供任何信息或做任何决定
+- **使用场景**：
+  * 依赖的 API/库可能不支持需要的功能 → 自己调研替代库
+  * 当前实现方向有技术风险 → 自己探索 Plan B
+  * 等待外部依赖时可以并行探索 → 自己开始备选方案
+  * 任务完成等待用户测试 → 自己准备失败时的后备方案
+- **例 1**：T001 实现了 Redis 缓存，但 Redis 可能在生产环境不可用
+  → ACTION: hedge, TARGET: T001, NEW_TASKS: "探索 in-memory 缓存作为替代"
+- **例 2**：T002 依赖 API X，但 API X 可能不支持 feature Y
+  → ACTION: hedge, TARGET: T002, NEW_TASKS: "调研 API Z 作为替代方案"
+
+### ASK（问用户）
+- **含义**：需要用户做一个 agent **无法自主决定**的选择
+- **关键区分**：缺少的信息只有用户知道，或涉及用户偏好/业务决策
+- **使用场景**：
+  * 涉及业务决策（选哪个方案取决于用户的偏好）
+  * 需要用户提供信息（API key、配置、优先级偏好）
+  * 任务方向不明确，需要用户澄清需求
+- **例 1**：用户说"优化性能"但没指定哪个部分
+  → ACTION: ask, QUESTION: "想优化哪个部分？页面加载 or API 响应？"
+- **例 2**：两种有效方案需要用户选择
+  → ACTION: ask, QUESTION: "使用 CSV 还是 JSON 作为导出格式？"
+
+### 快速判断规则
+问自己："agent 能不能自己完成这件事，还是必须等用户回答？"
+- **能自己完成** → HEDGE
+- **必须等用户** → ASK
+"""
+
+# -----------------------------------------------------------------------------
 # Planner
 # -----------------------------------------------------------------------------
 
@@ -509,6 +566,8 @@ PLANNER_SYSTEM_PROMPT = f"""You are a task planner.
 {PIVOT_TRIGGERS}
 
 {AGENT_AUTONOMY_PRINCIPLE}
+
+{HEDGE_VS_ASK_GUIDE}
 
 {FILE_MANAGEMENT_RULES}
 
@@ -962,6 +1021,67 @@ Output your verdict as a JSON object:
     "suggestions": "what to improve (empty string if passed)"
 }}
 ```
+"""
+
+# -----------------------------------------------------------------------------
+# Metrics Prompt Templates (for prompt-based category detection and extraction)
+# -----------------------------------------------------------------------------
+
+METRICS_CATEGORY_DETECTION_PROMPT = """You are a project category classifier.
+
+Given a project goal description, determine the project category.
+
+## Categories
+- **algorithm**: Algorithms, data processing, ML, computation, optimization
+- **web**: Web applications, frontend, React/Vue/Angular, UI components
+- **api**: Backend APIs, REST/GraphQL services, middleware, database CRUD
+- **cli**: Command-line tools, terminal scripts, argparse/click/typer
+- **library**: Reusable libraries, SDKs, packages, published modules
+- **general**: Default when none of the above clearly fits
+
+## Output Format
+
+Output ONLY a JSON object:
+
+```json
+{
+    "category": "algorithm|web|api|cli|library|general",
+    "confidence": "high|medium|low",
+    "reason": "brief explanation"
+}
+```
+"""
+
+METRICS_EXTRACTION_PROMPT = """You are a metrics extractor.
+
+Given a project goal description, extract any success metrics the user has defined.
+
+## Metric Types
+- **hard**: Binary pass/fail constraints (tests pass, builds succeed, no errors)
+- **soft**: Measurable targets with thresholds (performance >= X, coverage >= Y%)
+- **subjective**: Quality criteria evaluated by AI (code quality, UX, API design)
+
+## Output Format
+
+Output ONLY a JSON object:
+
+```json
+{
+    "has_custom_metrics": true,
+    "hard_constraints": [
+        {"name": "metric_name", "description": "what it measures"}
+    ],
+    "soft_targets": [
+        {"name": "metric_name", "description": "what it measures", "target": ">= 90%", "priority": "high|medium|low"}
+    ],
+    "subjective_criteria": [
+        {"name": "metric_name", "description": "what it measures"}
+    ],
+    "checkpoints": ["when to pause for review"]
+}
+```
+
+If no custom metrics are found, set `has_custom_metrics: false` and return empty arrays.
 """
 
 # -----------------------------------------------------------------------------

@@ -1,0 +1,943 @@
+{
+  "experiment": "exp7_metrics",
+  "7a_category_detection": {
+    "prompt_accuracy": 1.0,
+    "code_accuracy": 0.5,
+    "passed": true,
+    "results": [
+      {
+        "scenario": "algorithm_sort",
+        "trial": 1,
+        "expected": "algorithm",
+        "got_prompt": "algorithm",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"algorithm\",\n    \"confidence\": \"high\",\n    \"reason\": \"Merge sort implementation with memory optimization and parallel sorting is a core algorithms/computation task\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "algorithm_sort",
+        "trial": 2,
+        "expected": "algorithm",
+        "got_prompt": "algorithm",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"algorithm\",\n    \"confidence\": \"high\",\n    \"reason\": \"Merge sort implementation with memory optimization and parallel sorting is a core algorithm/computation task\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "algorithm_sort",
+        "trial": 3,
+        "expected": "algorithm",
+        "got_prompt": "algorithm",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"algorithm\",\n    \"confidence\": \"high\",\n    \"reason\": \"Merge sort implementation with optimization for memory and parallelism is a classic algorithm/computation task\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "algorithm_ml",
+        "trial": 1,
+        "expected": "algorithm",
+        "got_prompt": "algorithm",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"algorithm\",\n    \"confidence\": \"high\",\n    \"reason\": \"ML prediction model using XGBoost for sales forecasting is a core algorithm/computation task\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "algorithm_ml",
+        "trial": 2,
+        "expected": "algorithm",
+        "got_prompt": "algorithm",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"algorithm\",\n    \"confidence\": \"high\",\n    \"reason\": \"ML prediction model using XGBoost for sales forecasting is a core algorithm/computation task\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "algorithm_ml",
+        "trial": 3,
+        "expected": "algorithm",
+        "got_prompt": "algorithm",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"algorithm\",\n    \"confidence\": \"high\",\n    \"reason\": \"ML prediction model using XGBoost for sales forecasting is a computation/ML task\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "web_react",
+        "trial": 1,
+        "expected": "web",
+        "got_prompt": "web",
+        "got_code": "web",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"web\",\n    \"confidence\": \"high\",\n    \"reason\": \"React dashboard with responsive charts and cross-device browser support is a frontend web application\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "web_react",
+        "trial": 2,
+        "expected": "web",
+        "got_prompt": "web",
+        "got_code": "web",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"web\",\n    \"confidence\": \"high\",\n    \"reason\": \"React dashboard with responsive charts and cross-device browser support is a frontend web application\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "web_react",
+        "trial": 3,
+        "expected": "web",
+        "got_prompt": "web",
+        "got_code": "web",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"web\",\n    \"confidence\": \"high\",\n    \"reason\": \"React dashboard with responsive charts and cross-device browser support is a frontend web application\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "web_landing",
+        "trial": 1,
+        "expected": "web",
+        "got_prompt": "web",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"web\",\n    \"confidence\": \"high\",\n    \"reason\": \"Landing page with HTML/CSS, hero section, pricing table, contact form, and responsive design are all frontend web development tasks.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "web_landing",
+        "trial": 2,
+        "expected": "web",
+        "got_prompt": "web",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"web\",\n    \"confidence\": \"high\",\n    \"reason\": \"Landing page with HTML/CSS, hero section, pricing table, contact form, and responsive design is a frontend web development task.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "web_landing",
+        "trial": 3,
+        "expected": "web",
+        "got_prompt": "web",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"web\",\n    \"confidence\": \"high\",\n    \"reason\": \"Landing page with HTML/CSS, hero section, pricing table, contact form, and responsive design are all frontend web development tasks.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "api_rest",
+        "trial": 1,
+        "expected": "api",
+        "got_prompt": "api",
+        "got_code": "web",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"api\",\n    \"confidence\": \"high\",\n    \"reason\": \"REST API with CRUD endpoints, JWT authentication, and middleware are all core backend API concepts\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "api_rest",
+        "trial": 2,
+        "expected": "api",
+        "got_prompt": "api",
+        "got_code": "web",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"api\",\n    \"confidence\": \"high\",\n    \"reason\": \"REST API with CRUD endpoints, JWT authentication, and middleware are all core backend API concepts\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "api_rest",
+        "trial": 3,
+        "expected": "api",
+        "got_prompt": "api",
+        "got_code": "web",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"api\",\n    \"confidence\": \"high\",\n    \"reason\": \"REST API with CRUD endpoints, JWT authentication, and middleware are all backend API concerns\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "api_graphql",
+        "trial": 1,
+        "expected": "api",
+        "got_prompt": "api",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"api\",\n    \"confidence\": \"high\",\n    \"reason\": \"GraphQL backend server with database integration is a backend API service for e-commerce data.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "api_graphql",
+        "trial": 2,
+        "expected": "api",
+        "got_prompt": "api",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"api\",\n    \"confidence\": \"high\",\n    \"reason\": \"GraphQL backend server with database integration is a backend API service for e-commerce data.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "api_graphql",
+        "trial": 3,
+        "expected": "api",
+        "got_prompt": "api",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"api\",\n    \"confidence\": \"high\",\n    \"reason\": \"GraphQL backend server with database integration is a backend API service for e-commerce data.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "cli_tool",
+        "trial": 1,
+        "expected": "cli",
+        "got_prompt": "cli",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"cli\",\n    \"confidence\": \"high\",\n    \"reason\": \"Explicitly describes a command-line tool using Click (a CLI framework) that processes files and outputs to the terminal.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "cli_tool",
+        "trial": 2,
+        "expected": "cli",
+        "got_prompt": "cli",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"cli\",\n    \"confidence\": \"high\",\n    \"reason\": \"Explicitly describes a command-line tool using Click (a CLI framework) that processes files and outputs to terminal.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "cli_tool",
+        "trial": 3,
+        "expected": "cli",
+        "got_prompt": "cli",
+        "got_code": "algorithm",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"cli\",\n    \"confidence\": \"high\",\n    \"reason\": \"Explicitly describes a command-line tool using Click (a CLI framework) that processes files and outputs to the terminal.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "library_sdk",
+        "trial": 1,
+        "expected": "library",
+        "got_prompt": "library",
+        "got_code": "api",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"library\",\n    \"confidence\": \"high\",\n    \"reason\": \"A pip-installable Python SDK package with clean API surface is a reusable library/SDK for interacting with an external API.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "library_sdk",
+        "trial": 2,
+        "expected": "library",
+        "got_prompt": "library",
+        "got_code": "api",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"library\",\n    \"confidence\": \"high\",\n    \"reason\": \"A pip-installable Python SDK package with clean API surface is a reusable library/package for interacting with an external API.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "library_sdk",
+        "trial": 3,
+        "expected": "library",
+        "got_prompt": "library",
+        "got_code": "api",
+        "correct": true,
+        "code_correct": false,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"library\",\n    \"confidence\": \"high\",\n    \"reason\": \"A pip-installable Python SDK package with clean API surface is a reusable library/SDK for interacting with an external API.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "general_refactor",
+        "trial": 1,
+        "expected": "general",
+        "got_prompt": "general",
+        "got_code": "general",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"general\",\n    \"confidence\": \"high\",\n    \"reason\": \"Codebase refactoring (dead code removal, type hints, error handling) is a general maintenance task not specific to any particular project type.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "general_refactor",
+        "trial": 2,
+        "expected": "general",
+        "got_prompt": "general",
+        "got_code": "general",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"general\",\n    \"confidence\": \"high\",\n    \"reason\": \"Codebase refactoring (dead code removal, type hints, error handling) is a general maintenance task not specific to any particular domain like web, API, CLI, or algorithm.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "general_refactor",
+        "trial": 3,
+        "expected": "general",
+        "got_prompt": "general",
+        "got_code": "general",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"general\",\n    \"confidence\": \"high\",\n    \"reason\": \"Codebase refactoring for maintainability (dead code cleanup, type hints, error handling) is a general software engineering task not specific to any particular domain like web, API, CLI, or algorithm.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "general_ambiguous",
+        "trial": 1,
+        "expected": "general",
+        "got_prompt": "general",
+        "got_code": "general",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"general\",\n    \"confidence\": \"high\",\n    \"reason\": \"Project scaffolding and dev environment setup is a general infrastructure task not specific to any particular category like web, API, CLI, or algorithm.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "general_ambiguous",
+        "trial": 2,
+        "expected": "general",
+        "got_prompt": "general",
+        "got_code": "general",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"general\",\n    \"confidence\": \"high\",\n    \"reason\": \"Project scaffolding and dev environment setup is a general infrastructure task not specific to any particular category like web, API, CLI, or algorithm.\"\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "general_ambiguous",
+        "trial": 3,
+        "expected": "general",
+        "got_prompt": "general",
+        "got_code": "general",
+        "correct": true,
+        "code_correct": true,
+        "json_parsed": true,
+        "raw_text": "\n\n```json\n{\n    \"category\": \"general\",\n    \"confidence\": \"high\",\n    \"reason\": \"Project scaffolding and dev environment setup is a general infrastructure task not specific to any particular category like web, API, CLI, or algorithm.\"\n}\n```",
+        "error": null
+      }
+    ]
+  },
+  "7b_metrics_extraction": {
+    "accuracy": 1.0,
+    "sub_accuracies": {
+      "has_custom": 1.0,
+      "hard": 1.0,
+      "soft": 1.0,
+      "subjective": 1.0
+    },
+    "passed": true,
+    "results": [
+      {
+        "scenario": "explicit_metrics",
+        "trial": 1,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "tests_pass",
+            "type_check"
+          ],
+          "soft": [
+            "response_time",
+            "test_coverage"
+          ],
+          "subjective": [
+            "api_design",
+            "code_quality"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "tests_pass",
+            "type_check"
+          ],
+          "soft": [
+            "response_time",
+            "test_coverage"
+          ],
+          "subjective": [
+            "api_design",
+            "code_quality"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"tests_pass\", \"description\": \"All unit and integration tests pass\"},\n        {\"name\": \"type_check\", \"description\": \"mypy type checking passes with no errors\"}\n    ],\n    \"soft_targets\": [\n        {\"name\": \"response_",
+        "error": null
+      },
+      {
+        "scenario": "explicit_metrics",
+        "trial": 2,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "tests_pass",
+            "type_check"
+          ],
+          "soft": [
+            "response_time",
+            "test_coverage"
+          ],
+          "subjective": [
+            "api_design",
+            "code_quality"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "tests_pass",
+            "type_check"
+          ],
+          "soft": [
+            "response_time",
+            "test_coverage"
+          ],
+          "subjective": [
+            "api_design",
+            "code_quality"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"tests_pass\", \"description\": \"All unit and integration tests pass\"},\n        {\"name\": \"type_check\", \"description\": \"mypy type checking passes with no errors\"}\n    ],\n    \"soft_targets\": [\n        {\"name\": \"response_",
+        "error": null
+      },
+      {
+        "scenario": "explicit_metrics",
+        "trial": 3,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "tests_pass",
+            "type_check"
+          ],
+          "soft": [
+            "response_time",
+            "test_coverage"
+          ],
+          "subjective": [
+            "api_design",
+            "code_quality"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "tests_pass",
+            "type_check"
+          ],
+          "soft": [
+            "response_time",
+            "test_coverage"
+          ],
+          "subjective": [
+            "api_design",
+            "code_quality"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"tests_pass\", \"description\": \"All unit and integration tests pass\"},\n        {\"name\": \"type_check\", \"description\": \"mypy type checking passes with no errors\"}\n    ],\n    \"soft_targets\": [\n        {\"name\": \"response_",
+        "error": null
+      },
+      {
+        "scenario": "partial_metrics",
+        "trial": 1,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "help_works",
+            "runs"
+          ],
+          "soft": [],
+          "subjective": [
+            "cli_ux"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "help_works",
+            "runs"
+          ],
+          "soft": [],
+          "subjective": [
+            "cli_ux"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"runs\", \"description\": \"CLI runs without errors\"},\n        {\"name\": \"help_works\", \"description\": \"--help shows usage information\"}\n    ],\n    \"soft_targets\": [],\n    \"subjective_criteria\": [\n        {\"name\": \"cli_ux",
+        "error": null
+      },
+      {
+        "scenario": "partial_metrics",
+        "trial": 2,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "help_works",
+            "runs"
+          ],
+          "soft": [],
+          "subjective": [
+            "cli_ux"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "help_works",
+            "runs"
+          ],
+          "soft": [],
+          "subjective": [
+            "cli_ux"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"runs\", \"description\": \"CLI runs without errors\"},\n        {\"name\": \"help_works\", \"description\": \"--help shows usage information\"}\n    ],\n    \"soft_targets\": [],\n    \"subjective_criteria\": [\n        {\"name\": \"cli_ux",
+        "error": null
+      },
+      {
+        "scenario": "partial_metrics",
+        "trial": 3,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "help_works",
+            "runs"
+          ],
+          "soft": [],
+          "subjective": [
+            "cli_ux"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "help_works",
+            "runs"
+          ],
+          "soft": [],
+          "subjective": [
+            "cli_ux"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"runs\", \"description\": \"CLI runs without errors\"},\n        {\"name\": \"help_works\", \"description\": \"--help shows usage information\"}\n    ],\n    \"soft_targets\": [],\n    \"subjective_criteria\": [\n        {\"name\": \"cli_ux",
+        "error": null
+      },
+      {
+        "scenario": "no_metrics",
+        "trial": 1,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": false,
+          "hard": [],
+          "soft": [],
+          "subjective": []
+        },
+        "expected": {
+          "has_custom": false,
+          "hard": [],
+          "soft": [],
+          "subjective": []
+        },
+        "code_found_metrics": false,
+        "raw_text": "\n\n```json\n{\n    \"has_custom_metrics\": false,\n    \"hard_constraints\": [],\n    \"soft_targets\": [],\n    \"subjective_criteria\": [],\n    \"checkpoints\": []\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "no_metrics",
+        "trial": 2,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": false,
+          "hard": [],
+          "soft": [],
+          "subjective": []
+        },
+        "expected": {
+          "has_custom": false,
+          "hard": [],
+          "soft": [],
+          "subjective": []
+        },
+        "code_found_metrics": false,
+        "raw_text": "\n\n```json\n{\n    \"has_custom_metrics\": false,\n    \"hard_constraints\": [],\n    \"soft_targets\": [],\n    \"subjective_criteria\": [],\n    \"checkpoints\": []\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "no_metrics",
+        "trial": 3,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": false,
+          "hard": [],
+          "soft": [],
+          "subjective": []
+        },
+        "expected": {
+          "has_custom": false,
+          "hard": [],
+          "soft": [],
+          "subjective": []
+        },
+        "code_found_metrics": false,
+        "raw_text": "\n\n```json\n{\n    \"has_custom_metrics\": false,\n    \"hard_constraints\": [],\n    \"soft_targets\": [],\n    \"subjective_criteria\": [],\n    \"checkpoints\": []\n}\n```",
+        "error": null
+      },
+      {
+        "scenario": "inline_metrics",
+        "trial": 1,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "error_rate",
+            "throughput"
+          ],
+          "subjective": [
+            "code_quality"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "error_rate",
+            "throughput"
+          ],
+          "subjective": [
+            "code_quality"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "\n\n```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"tests_pass\", \"description\": \"All tests pass\"},\n        {\"name\": \"no_runtime_errors\", \"description\": \"No unhandled exceptions\"}\n    ],\n    \"soft_targets\": [\n        {\"name\": \"throughput\", \"description\": \"Pages scr",
+        "error": null
+      },
+      {
+        "scenario": "inline_metrics",
+        "trial": 2,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "error_rate",
+            "throughput"
+          ],
+          "subjective": [
+            "code_quality"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "error_rate",
+            "throughput"
+          ],
+          "subjective": [
+            "code_quality"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"tests_pass\", \"description\": \"All tests pass\"},\n        {\"name\": \"no_runtime_errors\", \"description\": \"No unhandled exceptions\"}\n    ],\n    \"soft_targets\": [\n        {\"name\": \"throughput\", \"description\": \"Pages scrap",
+        "error": null
+      },
+      {
+        "scenario": "inline_metrics",
+        "trial": 3,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "error_rate",
+            "throughput"
+          ],
+          "subjective": [
+            "code_quality"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "error_rate",
+            "throughput"
+          ],
+          "subjective": [
+            "code_quality"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"tests_pass\", \"description\": \"All tests pass\"},\n        {\"name\": \"no_runtime_errors\", \"description\": \"No unhandled exceptions\"}\n    ],\n    \"soft_targets\": [\n        {\"name\": \"throughput\", \"description\": \"Pages scrap",
+        "error": null
+      },
+      {
+        "scenario": "with_checkpoints",
+        "trial": 1,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "accuracy",
+            "latency"
+          ],
+          "subjective": [
+            "algorithm_elegance",
+            "code_quality"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "accuracy",
+            "latency"
+          ],
+          "subjective": [
+            "algorithm_elegance",
+            "code_quality"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "\n\n```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"tests_pass\", \"description\": \"All tests pass\"},\n        {\"name\": \"no_runtime_errors\", \"description\": \"No runtime errors during inference\"}\n    ],\n    \"soft_targets\": [\n        {\"name\": \"accuracy\", \"description\": \"",
+        "error": null
+      },
+      {
+        "scenario": "with_checkpoints",
+        "trial": 2,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "accuracy",
+            "latency"
+          ],
+          "subjective": [
+            "algorithm_elegance",
+            "code_quality"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "accuracy",
+            "latency"
+          ],
+          "subjective": [
+            "algorithm_elegance",
+            "code_quality"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "\n\n```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"tests_pass\", \"description\": \"All tests pass\"},\n        {\"name\": \"no_runtime_errors\", \"description\": \"No runtime errors during inference\"}\n    ],\n    \"soft_targets\": [\n        {\"name\": \"accuracy\", \"description\": \"",
+        "error": null
+      },
+      {
+        "scenario": "with_checkpoints",
+        "trial": 3,
+        "correct": true,
+        "has_custom_correct": true,
+        "hard_correct": true,
+        "soft_correct": true,
+        "subj_correct": true,
+        "json_parsed": true,
+        "got": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "accuracy",
+            "latency"
+          ],
+          "subjective": [
+            "algorithm_elegance",
+            "code_quality"
+          ]
+        },
+        "expected": {
+          "has_custom": true,
+          "hard": [
+            "no_runtime_errors",
+            "tests_pass"
+          ],
+          "soft": [
+            "accuracy",
+            "latency"
+          ],
+          "subjective": [
+            "algorithm_elegance",
+            "code_quality"
+          ]
+        },
+        "code_found_metrics": true,
+        "raw_text": "\n\n```json\n{\n    \"has_custom_metrics\": true,\n    \"hard_constraints\": [\n        {\"name\": \"tests_pass\", \"description\": \"All tests pass\"},\n        {\"name\": \"no_runtime_errors\", \"description\": \"No runtime errors during inference\"}\n    ],\n    \"soft_targets\": [\n        {\"name\": \"accuracy\", \"description\": \"",
+        "error": null
+      }
+    ]
+  }
+}
