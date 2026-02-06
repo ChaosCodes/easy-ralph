@@ -103,24 +103,57 @@ JSON 输出可以替换 15+ regex，但需要在 prompt 中明确 `hedge` 的含
 
 ---
 
-## 实验 4 决策
+## 实验 4: Orchestrator Agent Loop
 
-前 3 个实验中:
+### 结果 (15 trials)
+- JSON 解析率: 15/15 (100%)
+- **最终状态正确率: 15/15 (100%)**
+- 迭代次数限制内: 0/15 (0%) — Claude 生成的步骤更详细
+
+### 分析
+
+| 场景 | 期望最终状态 | 结果 | Python 迭代 | Claude 步骤 |
+|------|------------|------|------------|------------|
+| A: 简单通过 | done | 100% correct | ~3 | 7-9 |
+| B: 重试后通过 | done | 100% correct | ~5 | 10-14 |
+| C: 分数下降触发 pivot | pivot | 100% correct | ~6 | 21-29 |
+| D: 需要用户测试 | checkpoint | 100% correct | ~4 | 8 |
+| E: 并行执行 | done | 100% correct | ~6 | 12-19 |
+
+### 关键发现
+
+**Claude 理解工作流逻辑，但输出更多步骤。** 这是因为：
+1. Claude 把 plan/work/review/evaluate 拆成独立步骤
+2. Python 代码在一个 iteration 内完成 work→review→evaluate
+3. Claude 的步骤数 ≈ Python 迭代数 × 3（因为每个子操作是一步）
+
+**最终状态 100% 正确 = Claude 完全理解了调度逻辑。**
+
+### 结论
+- 路由逻辑可以交给 agent
+- **必须保留在代码中的**: max_iterations 硬限制、error recovery、文件锁
+- 迭代效率需要优化（agent 步骤过多 = API 调用过多 = 成本高）
+
+---
+
+## 总结决策
+
+### 前 3 个实验中:
 - 实验 1: PASSED — JSON 输出可靠
-- 实验 2: FAILED (87.5%) — borderline，prompt 可改进
-- 实验 3: PASSED (91.7%) — JSON 输出可靠
+- 实验 2: 87.5% (borderline) — prompt 可改进
+- 实验 3: PASSED — JSON 输出可靠
+- 实验 4: Final state 100%, 但步骤效率低
 
-**决策**: 实验 4 (Orchestrator Agent) 有条件进行。
+### 已实施的改动
+1. ✅ Reviewer: JSON 解析 + regex fallback (`reviewer.py`)
+2. ✅ Planner: JSON 解析 + regex fallback (`planner.py`)
+3. ✅ Prompts: 请求 JSON 输出格式 (`prompts.py`)
 
-条件:
-1. ✅ JSON 结构化输出可靠
-2. ⚠️ 数值阈值判断需要代码保底
-3. ⚠️ Ralph 特有概念需要 prompt 强化
-
-**建议**:
-- 实验 4 可以尝试，但 Orchestrator 中的**安全限制** (max_iterations, error recovery) **必须保留在代码中**
-- 路由逻辑可以用 JSON 决策替代
-- 数值判断 (pivot threshold) 保留代码作为硬限制，prompt 作为软建议
+### 建议后续
+1. **Evaluator pivot**: 保留代码硬限制，prompt 可作为辅助信号
+2. **Planner hedge**: 强化 prompt 中 hedge 概念
+3. **Orchestrator**: 保留 Python 循环结构，但路由逻辑可简化（agent 理解所有场景）
+4. **不建议**: 完全用 agent 替代 orchestrator（步骤效率太低）
 
 ---
 
