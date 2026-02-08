@@ -290,12 +290,19 @@ def logs_cmd(
     console.print(f"  Started:       {summary.get('started_at', 'N/A')}")
     if summary.get('ended_at'):
         console.print(f"  Ended:         {summary['ended_at']}")
-    console.print(f"  Duration:      {summary.get('duration_seconds', 0):.1f}s")
+    from .logger import format_duration, format_tokens
+    console.print(f"  Duration:      {format_duration(summary.get('duration_seconds', 0))}")
     console.print()
     console.print(f"  Iterations:    {summary.get('total_iterations', 0)}")
     console.print(f"  Tool Calls:    {summary.get('total_tool_calls', 0)}")
     console.print(f"  Tasks Created: {summary.get('tasks_created', 0)}")
     console.print(f"  Tasks Done:    {summary.get('tasks_completed', 0)}")
+    total_tokens = summary.get('total_input_tokens', 0) + summary.get('total_output_tokens', 0)
+    if total_tokens > 0:
+        console.print(f"  Tokens:        {format_tokens({'input_tokens': summary.get('total_input_tokens', 0), 'output_tokens': summary.get('total_output_tokens', 0)})}")
+    cost = summary.get('total_cost_usd', 0)
+    if cost and cost > 0:
+        console.print(f"  Cost:          ${cost:.2f}")
 
     actions = summary.get('actions', {})
     if actions:

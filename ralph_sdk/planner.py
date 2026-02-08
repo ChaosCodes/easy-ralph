@@ -9,18 +9,18 @@ Reads goal.md and pool.md, outputs one of these actions:
 - DONE: Goal completed
 """
 
-import json
 import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from claude_code_sdk import AssistantMessage, ClaudeCodeOptions, query
+from claude_agent_sdk import ClaudeAgentOptions
 from rich.console import Console
 
-from .pool import read_goal, read_pool
+from .logger import log_tool_call, stream_query
+from .pool import clear_handoff_note, read_goal, read_handoff_note, read_pool
 from .prompts import EXPLORE_MODE_ADDENDUM, PLANNER_SYSTEM_PROMPT, build_planner_prompt
-from .worker import format_tool_line
+from .utils import extract_json
 
 console = Console()
 
@@ -74,6 +74,9 @@ class PlannerDecision:
     failure_pattern: str = ""     # Pattern of failure observed
     new_approach: str = ""        # New approach to try
 
+    # Execution stats (set after query completes)
+    result_stats: Optional[object] = None  # ResultMessage from SDK
+
     def __post_init__(self):
         if self.task_ids is None:
             self.task_ids = []
@@ -98,28 +101,6 @@ class PlannerDecision:
         elif self.action == Action.PIVOT_ITERATION:
             return "iteration"
         return None
-
-
-def _extract_json(text: str) -> dict | None:
-    """Extract a JSON object from text, handling common LLM output patterns."""
-    # Pattern 1: JSON in markdown code fence
-    fence_match = re.search(r"```(?:json)?\s*\n(\{.*?\})\s*\n```", text, re.DOTALL)
-    if fence_match:
-        try:
-            return json.loads(fence_match.group(1))
-        except json.JSONDecodeError:
-            pass
-
-    # Pattern 2: Bare JSON object
-    brace_start = text.find("{")
-    brace_end = text.rfind("}")
-    if brace_start != -1 and brace_end > brace_start:
-        try:
-            return json.loads(text[brace_start:brace_end + 1])
-        except json.JSONDecodeError:
-            pass
-
-    return None
 
 
 def _parse_planner_json(obj: dict) -> PlannerDecision:
@@ -268,7 +249,7 @@ def parse_planner_output(text: str) -> PlannerDecision:
 
     Tries JSON first (more reliable), falls back to regex for backwards compatibility.
     """
-    json_obj = _extract_json(text)
+    json_obj = extract_json(text)
     if json_obj and "action" in json_obj:
         return _parse_planner_json(json_obj)
 
@@ -296,8 +277,15 @@ async def plan(cwd: str = ".", verbose: bool = False, explore_mode: bool = False
     if not pool:
         raise ValueError("pool.md not found. Run initializer first.")
 
+    # Read handoff note if available (from previous session resume)
+    handoff = read_handoff_note(cwd)
+
     # Build prompt
-    prompt = build_planner_prompt(goal, pool)
+    prompt = build_planner_prompt(goal, pool, handoff=handoff)
+
+    # Clear handoff after first use (it's now in the prompt)
+    if handoff:
+        clear_handoff_note(cwd)
 
     # Add explore mode context to prompt if enabled
     if explore_mode:
@@ -308,44 +296,27 @@ async def plan(cwd: str = ".", verbose: bool = False, explore_mode: bool = False
     if explore_mode:
         system_prompt = f"{PLANNER_SYSTEM_PROMPT}\n\n{EXPLORE_MODE_ADDENDUM}"
 
-    # Run planner query with output
-    result_text = ""
-    tool_count = 0
-
-    async for message in query(
+    # Run planner query with unified streaming
+    sr = await stream_query(
         prompt=prompt,
-        options=ClaudeCodeOptions(
+        options=ClaudeAgentOptions(
             system_prompt=system_prompt,
             allowed_tools=[
-                "Read", "Glob", "Grep", "Write", "Edit",  # File operations
-                "LSP",  # Code intelligence
-                "WebFetch", "WebSearch",  # Research best practices, docs
+                "Read", "Glob", "Grep", "Write", "Edit",
+                "LSP",
+                "WebFetch", "WebSearch",
             ],
             permission_mode="acceptEdits",
             max_turns=15,
             cwd=cwd,
         ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                # Handle text
-                if hasattr(block, "text") and block.text:
-                    result_text += block.text
-                    if verbose:
-                        text = block.text.strip()
-                        if text and len(text) > 20:
-                            lines = text.split('\n')
-                            first_line = lines[0][:80]
-                            if len(lines[0]) > 80:
-                                first_line += "..."
-                            console.print(f"     [italic bright_black]🧠 {first_line}[/italic bright_black]")
-
-                # Handle tool use
-                if hasattr(block, "name") and hasattr(block, "input"):
-                    tool_count += 1
-                    if verbose:
-                        tool_line = format_tool_line(block.name, block.input, cwd)
-                        console.print(f"[bright_black][{tool_count:2d}][/bright_black] {tool_line}")
+        agent_name="planner",
+        emoji="🧠",
+        cwd=cwd,
+        verbose=verbose,
+    )
 
     # Parse and return decision
-    return parse_planner_output(result_text)
+    decision = parse_planner_output(sr.text)
+    decision.result_stats = sr.result_stats
+    return decision

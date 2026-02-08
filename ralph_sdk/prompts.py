@@ -57,8 +57,8 @@ PESSIMISTIC_PREPARATION_PRINCIPLE = """
    - 质疑自己的假设
 
 2. **不要过度自信**
-   - 完成任务后，问自己："这个方案可能在哪里失败？"
-   - 列出 2-3 个可能的失败原因
+   - 禁止在 Failure Risks 为空时结束任务
+   - 必须列出至少 2 个可能的失败原因
    - 这不是悲观，是专业
 
 3. **永远不要干等**
@@ -241,9 +241,9 @@ TEMPORAL_VERIFICATION_PRINCIPLE = """
    - 格式: `[Verified] <topic>: <finding> (source: <url>)`
    - 避免其他任务重复搜索相同话题
 
-### 触发词识别
+### 触发词识别（遇到时必须 WebSearch，禁止跳过）
 
-当任务描述或执行过程中出现以下词汇，应触发搜索验证：
+当任务描述或执行过程中出现以下词汇，**必须**触发 WebSearch 验证，禁止仅凭模型记忆回答：
 - 版本相关：latest, newest, current, v2, v3, 最新, 目前
 - 推荐相关：recommended, best practice, should use, 推荐, 最佳
 - 状态相关：still maintained, deprecated, active, 是否还
@@ -879,14 +879,14 @@ Execute an EXPLORE task: research, investigate, gather information.
 
 ## Temporal Verification During Exploration
 When exploring topics that may be time-sensitive:
-- Use WebSearch to verify current information
-- Annotate findings with: `[已搜索验证 YYYY-MM-DD]` or `[模型记忆，建议验证]`
-- Add verified findings to pool.md: `[Verified] <topic>: <finding> (source: <url>)`
+- 遇到触发词时必须 WebSearch，禁止跳过
+- 禁止无 `[已搜索验证 YYYY-MM-DD]` 或 `[模型记忆，建议验证]` annotation 的 Finding
+- 禁止完成 EXPLORE 时 pool.md Findings section 无更新
 
 ## Output Requirements
 Update tasks/{{task_id}}.md with:
 - **Execution Log**: What you did step by step
-- **Findings**: What you discovered (with source annotations)
+- **Findings**: What you discovered（禁止无 source annotation 的 Finding）
 - **Verified Information**: Topics verified via search (URLs)
 - **Confidence**: high / medium / low
   - high: confident in findings, ready to proceed
@@ -896,7 +896,7 @@ Update tasks/{{task_id}}.md with:
 
 Also update pool.md:
 - Update task status and summary
-- Add important findings to the shared Findings section
+- 必须将重要 findings 同步到 Findings section（禁止完成时 Findings 无新增）
 - **Add verified information to avoid duplicate searches**
 """
 
@@ -924,7 +924,7 @@ Execute an IMPLEMENT task: write code, make changes.
 5. Implement the changes
 6. If uncertain about approach, use AskUserQuestion to ask the user
 7. Verify acceptance criteria
-8. **悲观准备**: 思考这个实现可能在哪里失败
+8. **悲观准备**: 禁止在 task file 的 Failure Risks section 为空时标记任务完成
 
 ## Temporal Verification During Implementation
 ```python
@@ -940,10 +940,19 @@ import some_lib
 some_lib.new_method()
 ```
 
+## Test Requirements (实现后必须写测试)
+实现完成后，必须在项目 tests/ 目录写对应的 test：
+- 针对你实现的核心功能写 1-3 个测试用例
+- 测试文件命名: `tests/test_<feature_name>.py` (或项目已有的 test 目录结构)
+- 运行测试确认通过: `pytest tests/ -q` (或项目约定的 test 命令)
+- 如果任务不适合写测试（纯文档、主观任务），在 task file 中标注 "no test applicable" 并说明原因
+- 禁止在有 test 且 test 未通过的情况下声称任务完成
+
 ## Output Requirements
 Update tasks/{{task_id}}.md with:
 - **Execution Log**: What you did step by step
 - **Files Changed**: List of modified files
+- **Tests Written**: List of test files and what they test
 - **Verified APIs/Libraries**: What you verified and sources
 - **Notes**: Any important observations
 - **Failure Risks** (重要): 这个实现可能失败的原因和应对方向
@@ -955,11 +964,12 @@ Also update pool.md:
 - 如果有重要的失败风险，同步到 Findings 的 Failure Assumptions 区域
 - **Add newly verified information to Findings for reuse**
 
-## Quality Checks
-- Run typecheck if applicable
+## Quality Checks (必须执行，禁止跳过)
+- 实现完成后必须运行 typecheck（如项目有配置）。禁止跳过
+- 实现完成后必须运行 tests。禁止跳过
 - Ensure code follows existing patterns
-- Don't over-engineer
-- Verify time-sensitive information before using
+- 禁止使用未经 WebSearch 验证的外部 API 版本号/函数签名
+- 禁止在未运行 typecheck 的情况下声称实现完成（如项目有 tsconfig/pyproject 等配置）
 """
 
 # -----------------------------------------------------------------------------
@@ -973,7 +983,14 @@ REVIEWER_SYSTEM_PROMPT = f"""You are a task reviewer.
 ## Your Job
 Review the result of an IMPLEMENT task and determine if it's complete.
 
-## Review Criteria
+## Review Process (必须按顺序执行)
+
+### Step 1: Run Tests (禁止跳过)
+首先运行项目测试：`pytest tests/ -q`（或项目约定的 test 命令）
+- 如果有 test 且任何 test 失败 → 直接判定 RETRY，不需要继续后续步骤
+- 如果 Worker 标注了 "no test applicable" → 检查理由是否合理，合理则跳过此步
+
+### Step 2: Review Criteria
 1. Are all acceptance criteria met?
 2. Does the code work (typecheck, basic tests)?
 3. Does it align with the overall goal?
@@ -982,20 +999,21 @@ Review the result of an IMPLEMENT task and determine if it's complete.
    - Are version-sensitive operations properly verified?
    - Are there unverified assumptions about current best practices?
 
-## Temporal Verification Flags
+## Temporal Verification Flags (必须按以下清单逐项检查，不可跳过)
 
-Look for these warning signs:
-- Using specific version numbers without verification source
-- Assuming API patterns without `[已搜索验证]` annotation
-- "I remember this is how it works" type implementations
-- Deprecated patterns that may have changed
+逐项检查以下每一条，在 review 中标注每项的检查结果：
+1. 是否使用了特定版本号但没有验证来源 → 如有，标记 NEEDS_VERIFICATION
+2. 是否假设了 API 用法但没有 `[已搜索验证]` annotation → 如有，标记 NEEDS_VERIFICATION
+3. 是否有 "I remember this is how it works" 类型的未验证实现 → 如有，标记 NEEDS_VERIFICATION
+4. 是否使用了可能已 deprecated 的模式 → 如有，标记 NEEDS_VERIFICATION
 
-If found, mark as NEEDS_VERIFICATION in your review.
+禁止跳过上述任何一项检查。
 
 ## Possible Verdicts
 
 ### PASSED
 Task is complete. All criteria met. Time-sensitive info properly verified.
+禁止在 test 未全部通过时判定 PASSED。
 
 ### RETRY
 Non-fundamental issue that can be fixed by retrying:
@@ -1085,12 +1103,55 @@ If no custom metrics are found, set `has_custom_metrics: false` and return empty
 """
 
 # -----------------------------------------------------------------------------
+# Context Compaction Prompt
+# -----------------------------------------------------------------------------
+
+COMPACTION_PROMPT = """You are a context compactor for a task management system.
+
+Your job is to compress a pool.md file that has grown too large, while preserving all critical information.
+
+## Rules
+
+1. **Task Table** — 保留原样，不压缩
+2. **Findings** — 压缩为 3-5 条最关键的发现。保留 [PIVOT_RECOMMENDED] 标记原样。保留 [Verified] 条目原样。
+3. **Progress Log** — 只保留最近 5 条。旧条目会被归档（不需要你处理）。
+4. **Verified Information** — 只保留 7 天内的条目（基于 [Verified YYYY-MM-DD] 日期）
+5. **Failure Assumptions** — 合并相同任务的多个假设为摘要，删除已完成任务的假设
+
+## Output Format
+
+输出压缩后的完整 pool.md 内容。保持所有 section headers 不变。
+禁止删除任何 section header。
+禁止修改 Task Table 中的任何内容。
+
+## Input
+
+当前日期: {today}
+
+当前 pool.md 内容:
+---
+{pool_content}
+---
+
+输出压缩后的 pool.md（完整内容，可直接写入文件）：
+"""
+
+# -----------------------------------------------------------------------------
 # Helper: Build prompts with context
 # -----------------------------------------------------------------------------
 
-def build_planner_prompt(goal: str, pool: str) -> str:
+def build_planner_prompt(goal: str, pool: str, handoff: str = "") -> str:
     """Build the planner prompt with current context."""
-    return f"""Current Goal:
+    handoff_section = ""
+    if handoff:
+        handoff_section = f"""
+Handoff Notes (from previous session):
+---
+{handoff}
+---
+
+"""
+    return f"""{handoff_section}Current Goal:
 ---
 {goal}
 ---

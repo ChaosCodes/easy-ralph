@@ -5,15 +5,15 @@ Worker agent: executes EXPLORE and IMPLEMENT tasks.
 - IMPLEMENT: write code, make changes
 """
 
-import os
 import re
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from claude_code_sdk import AssistantMessage, ClaudeCodeOptions, query
+from claude_agent_sdk import ClaudeAgentOptions
 from rich.console import Console
 from rich.panel import Panel
 
+from .logger import format_tool_line, log_tool_call, shorten_path, stream_query
 from .pool import (
     add_verified_info,
     get_verified_info,
@@ -44,84 +44,22 @@ class WorkerResult:
     task_type: str
     confidence: Optional[str] = None  # high / medium / low (for EXPLORE)
     error: Optional[str] = None
+    result_stats: Optional[object] = None  # ResultMessage from SDK
 
 
-# --- Output formatting (from old executor.py) ---
-
-def shorten_path(path: str, cwd: str = "") -> str:
-    """Shorten file path for display."""
-    if cwd and path.startswith(cwd):
-        path = path[len(cwd):].lstrip("/")
-    home = os.path.expanduser("~")
-    if path.startswith(home):
-        path = "~" + path[len(home):]
-    return path
+def format_duration_ms(ms: int) -> str:
+    """Format milliseconds as human-readable duration."""
+    from .logger import format_duration
+    return format_duration(ms / 1000)
 
 
-def format_tool_line(tool_name: str, tool_input: dict, cwd: str = "") -> str:
-    """Format a tool use as a single compact line with rich highlighting."""
-    if tool_name == "Read":
-        path = shorten_path(tool_input.get("file_path", "?"), cwd)
-        return f"[bold cyan]Read[/bold cyan] {path}"
-
-    if tool_name == "Write":
-        path = shorten_path(tool_input.get("file_path", "?"), cwd)
-        lines = len(tool_input.get("content", "").split("\n"))
-        return f"[bold green]Write[/bold green] {path} [dim]({lines} lines)[/dim]"
-
-    if tool_name == "Edit":
-        path = shorten_path(tool_input.get("file_path", "?"), cwd)
-        old_lines = len(tool_input.get("old_string", "").split("\n"))
-        new_lines = len(tool_input.get("new_string", "").split("\n"))
-        return f"[bold yellow]Edit[/bold yellow] {path} [red]-{old_lines}[/red] [green]+{new_lines}[/green]"
-
-    if tool_name == "Bash":
-        cmd = tool_input.get("command", "?")
-        if len(cmd) > 60:
-            cmd = cmd[:57] + "..."
-        return f"[bold magenta]Bash[/bold magenta] {cmd}"
-
-    if tool_name == "Glob":
-        pattern = tool_input.get("pattern", "?")
-        path = tool_input.get("path", "")
-        suffix = f" [dim]in {shorten_path(path, cwd)}[/dim]" if path else ""
-        return f"[bold blue]Glob[/bold blue] {pattern}{suffix}"
-
-    if tool_name == "Grep":
-        pattern = tool_input.get("pattern", "?")
-        path = shorten_path(tool_input.get("path", "."), cwd)
-        return f"[bold blue]Grep[/bold blue] '{pattern}' [dim]in {path}[/dim]"
-
-    if tool_name == "Task":
-        desc = tool_input.get("description", "?")
-        subagent = tool_input.get("subagent_type", "")
-        return f"[bold cyan]Task[/bold cyan] {desc} [dim]({subagent})[/dim]"
-
-    if tool_name == "LSP":
-        op = tool_input.get("operation", "?")
-        path = shorten_path(tool_input.get("filePath", "?"), cwd)
-        line = tool_input.get("line", "?")
-        return f"[bold green]LSP[/bold green] {op} {path}:{line}"
-
-    if tool_name == "WebFetch":
-        url = tool_input.get("url", "?")
-        if len(url) > 50:
-            url = url[:47] + "..."
-        return f"[bold blue]WebFetch[/bold blue] {url}"
-
-    if tool_name == "WebSearch":
-        q = tool_input.get("query", "?")
-        return f"[bold blue]WebSearch[/bold blue] '{q}'"
-
-    if tool_name == "NotebookEdit":
-        path = shorten_path(tool_input.get("notebook_path", "?"), cwd)
-        edit_mode = tool_input.get("edit_mode", "replace")
-        return f"[bold purple]NotebookEdit[/bold purple] {path} [dim]({edit_mode})[/dim]"
-
-    return f"[bold]{tool_name}[/bold]"
+def _format_result_tokens(result_stats) -> str:
+    """Format tokens from a ResultMessage."""
+    from .logger import format_tokens
+    return format_tokens(result_stats.usage)
 
 
-def parse_worker_output(text: str, task_type: str) -> dict:
+def extract_worker_metadata(text: str, task_type: str) -> dict:
     """Parse worker output to extract key information.
 
     Note: Worker always returns success=True. The Reviewer is responsible
@@ -205,50 +143,40 @@ async def work(
         tools = base_tools + ["Write", "Edit"]
         permission_mode = "acceptEdits"
 
-    # Run worker query with detailed output
-    result_text = ""
-    turn_count = 0
-    tool_count = 0
-
-    async for message in query(
+    # Run worker query with unified streaming
+    sr = await stream_query(
         prompt=prompt,
-        options=ClaudeCodeOptions(
+        options=ClaudeAgentOptions(
             system_prompt=system_prompt,
             allowed_tools=tools,
             permission_mode=permission_mode,
             max_turns=50,
             cwd=cwd,
         ),
-    ):
-        if isinstance(message, AssistantMessage):
-            turn_count += 1
-
-            for block in message.content:
-                # Handle text content
-                if hasattr(block, "text") and block.text:
-                    result_text += block.text
-                    if verbose:
-                        # Show brief summary of thinking
-                        text = block.text.strip()
-                        if text and len(text) > 20:
-                            lines = text.split('\n')
-                            first_line = lines[0][:80]
-                            if len(lines[0]) > 80:
-                                first_line += "..."
-                            console.print(f"     [italic bright_black]💭 {first_line}[/italic bright_black]")
-
-                # Handle tool use
-                if hasattr(block, "name") and hasattr(block, "input"):
-                    tool_count += 1
-                    if verbose:
-                        tool_line = format_tool_line(block.name, block.input, cwd)
-                        console.print(f"[bright_black][{tool_count:2d}][/bright_black] {tool_line}")
+        agent_name="worker",
+        emoji="💭",
+        cwd=cwd,
+        verbose=verbose,
+    )
+    result_text = sr.text
+    tool_count = sr.tool_count
+    result_stats = sr.result_stats
 
     # Parse result
-    parsed = parse_worker_output(result_text, task_type)
+    parsed = extract_worker_metadata(result_text, task_type)
 
-    # Display summary
-    stats = f"[bright_black]{turn_count} turns, {tool_count} tool calls[/bright_black]"
+    # Build stats line
+    stats_parts = [f"{tool_count} tool calls"]
+    if result_stats:
+        if result_stats.duration_ms:
+            stats_parts.append(format_duration_ms(result_stats.duration_ms))
+        tokens_str = _format_result_tokens(result_stats)
+        if tokens_str:
+            stats_parts.append(tokens_str)
+        if result_stats.total_cost_usd:
+            stats_parts.append(f"${result_stats.total_cost_usd:.2f}")
+    stats = f"[bright_black]{' · '.join(stats_parts)}[/bright_black]"
+
     if parsed.get("success", True):
         console.print(
             Panel(
@@ -272,4 +200,5 @@ async def work(
         task_type=task_type,
         confidence=parsed.get("confidence"),
         error=parsed.get("error"),
+        result_stats=result_stats,
     )

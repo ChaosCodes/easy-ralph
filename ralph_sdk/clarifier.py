@@ -1,19 +1,21 @@
 """
 Requirements clarification module.
 
-Clarifies user requirements through interactive Q&A and outputs to goal.md.
-Includes dynamic metrics clarification with AI-generated questions.
+Clarifies user requirements through two-phase interactive Q&A:
+- Phase 1: Agent generates questions as JSON
+- Phase 2: Our code presents questions via Rich prompts
+- Phase 3: Answers fed back to agent for final output
+
+AskUserQuestion doesn't work through the SDK (interactive form can't render
+in piped stdin/stdout mode). Instead we use a two-phase approach.
 """
 
+import json
 import re
-from typing import Optional
-
-import questionary
-from questionary import Style
-from claude_code_sdk import AssistantMessage, ClaudeCodeOptions, query
+from claude_agent_sdk import ClaudeAgentOptions
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
+from .interactive import ask_user_interactive, CYAN, BOLD, DIM, YELLOW, GREEN, GRAY, RESET
 
 from .metrics import (
     AutomationLevel,
@@ -22,177 +24,47 @@ from .metrics import (
     MetricsConfig,
     MetricType,
     TaskCategory,
-    detect_category,
     get_default_metrics,
 )
+from .logger import log_tool_call, stream_query
 from .pool import init_ralph_dir, write_goal
 from .prompts import CLARIFIER_SYSTEM_PROMPT, CLARIFIER_V2_SYSTEM_PROMPT, CLARIFIER_V2_EXPLORE_PROMPT
 
 console = Console()
 
-# Custom style for questionary
-custom_style = Style([
-    ('qmark', 'fg:cyan bold'),
-    ('question', 'fg:white bold'),
-    ('answer', 'fg:cyan'),
-    ('pointer', 'fg:cyan bold'),
-    ('highlighted', 'fg:cyan bold'),
-    ('selected', 'fg:green'),
-])
-
 
 # =============================================================================
-# Base Questions (always asked)
+# Two-Phase Q&A: Agent generates questions, Rich presents them
 # =============================================================================
 
-Q_PURPOSE = {
-    "question": "这个项目的主要用途是什么？",
-    "options": [
-        "生产部署 (给真实用户用)",
-        "研究实验 (发论文、验证想法)",
-        "学习探索 (学习新技术)",
-        "原型验证 (快速验证可行性)",
-    ],
-}
+def _ask_user_rich(questions_json: list[dict]) -> dict[str, str]:
+    """Present questions to user via interactive terminal selector.
 
-Q_EVAL_MODE = {
-    "question": "评估/测试主要由谁来做？",
-    "options": [
-        "全自动 (有现成 benchmark/测试集)",
-        "半自动 (有代理指标，但最终需人工确认)",
-        "人工为主 (需要在真实环境测试)",
-    ],
-}
+    Uses arrow-key navigation with highlight bar, direct typing for free text,
+    and collapsed confirmation view. Falls back to simple input() on non-Unix.
 
-Q_TEST_FREQUENCY = {
-    "question": "你大概多久能测试一次？",
-    "options": [
-        "实时 (我会一直盯着，随时可以测)",
-        "每小时 (我会定期来看)",
-        "每天 (晚上/第二天来看结果)",
-        "更久 (需要安排专门时间测试)",
-    ],
-}
+    Args:
+        questions_json: List of question dicts with format:
+            [{"question": "...", "options": ["A", "B", "C"]}, ...]
 
-Q_BATCH_PREFERENCE = {
-    "question": "希望怎么安排测试？",
-    "options": [
-        "一个一个测 (Agent 出一个方案，我测完再继续)",
-        "批量测 (Agent 先出多个方案，我一起测)",
-        "自动筛选 (Agent 用代理指标筛选，只让我测最有希望的)",
-    ],
-}
+    Returns:
+        Dict mapping question text to user's answer.
+    """
+    return ask_user_interactive(questions_json)
 
 
-# =============================================================================
-# AI Prompts for Dynamic Generation
-# =============================================================================
-
-DYNAMIC_QUESTION_PROMPT = """
-用户正在描述他们想要构建的项目。请根据用户的描述，生成 2-3 个针对性的选择题，帮助澄清项目的关键约束和评估指标。
-
-## 用户描述
-{goal}
-
-## 用途
-{purpose}
-
-## 要求
-1. 每个问题必须是选择题，有 3-4 个选项
-2. 问题要针对这个具体场景，不要太通用
-3. 关注对评估指标有影响的因素（延迟、准确性、成本等）
-4. 选项要具体，最好有数字范围
-5. 不要问"你担心什么问题"这种泛泛的问题，要问具体的技术约束
-
-## 输出格式（严格按此格式）
-
-QUESTION: <问题文字>
-A: <选项A>
-B: <选项B>
-C: <选项C>
-D: <选项D（可选）>
-
-QUESTION: <下一个问题>
-...
-
-只输出问题，不要有其他解释。
-"""
-
-METRIC_GENERATION_PROMPT = """
-根据用户的项目描述和回答，生成具体的评估指标。
-
-## 用户描述
-{goal}
-
-## 用途
-{purpose}
-
-## 用户回答
-{answers}
-
-## 评估模式
-{eval_mode}
-
-## 要求
-生成 2-4 个具体的评估指标，每个指标包括：
-- 名称（英文，snake_case，如 response_latency）
-- 类型（hard = 必须达到 / soft = 目标值 / subjective = 主观评估）
-- 目标值（具体数字，如 <= 50ms, >= 90%）
-- 为什么重要（一句话，针对这个具体项目）
-- 如何测量（具体方法，要可执行）
-- 自动化程度（auto = 可自动测试 / manual = 需要人工测试 / hybrid = 可用代理指标自动测，最终需人工确认）
-
-如果是 manual 或 hybrid 类型的指标，还需要提供：
-- 代理指标（proxy_metric）：一个可以自动测试的近似指标
-- 批量测试建议（batch_suggestion）：如何让用户高效批量测试
-
-## 输出格式（严格按此格式）
-
-METRIC: <英文名称>
-TYPE: <hard|soft|subjective>
-TARGET: <目标值>
-WHY: <为什么重要>
-MEASURE: <如何测量>
-AUTOMATION: <auto|manual|hybrid>
-PROXY: <代理指标，如果 AUTOMATION 不是 auto>
-BATCH: <批量测试建议，如果 AUTOMATION 不是 auto>
-
-METRIC: <下一个指标>
-...
-
-只输出指标，不要有其他解释。
-"""
+def _format_answers_for_prompt(answers: dict[str, str]) -> str:
+    """Format collected answers as text for feeding back to agent."""
+    lines = []
+    for q, a in answers.items():
+        lines.append(f"Q: {q}")
+        lines.append(f"A: {a}")
+    return "\n".join(lines)
 
 
 # =============================================================================
 # Parsing Functions
 # =============================================================================
-
-def parse_dynamic_questions(text: str) -> list[dict]:
-    """Parse AI-generated questions from text."""
-    questions = []
-    blocks = re.split(r'\n?QUESTION:\s*', text)
-
-    for block in blocks[1:]:
-        lines = block.strip().split('\n')
-        if not lines:
-            continue
-
-        question = {"question": lines[0].strip(), "options": []}
-
-        for line in lines[1:]:
-            line = line.strip()
-            match = re.match(r'^([A-D])[\.:]\s*(.+)$', line)
-            if match:
-                value = match.group(2).strip()
-                if value:
-                    question["options"].append(value)
-
-        if question["question"] and len(question["options"]) >= 2:
-            questions.append(question)
-
-    return questions
-
 
 def parse_metrics(text: str) -> list[dict]:
     """Parse AI-generated metrics from text."""
@@ -240,94 +112,24 @@ def parse_metrics(text: str) -> list[dict]:
     return metrics
 
 
-# =============================================================================
-# Interactive Q&A with questionary
-# =============================================================================
+def _extract_json(text: str) -> dict | None:
+    """Extract a JSON object from text."""
+    fence_match = re.search(r"```(?:json)?\s*\n(\{.*?\})\s*\n```", text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
 
-async def ask_select(question: str, options: list[str], allow_custom: bool = True) -> str:
-    """Ask a selection question with optional custom input."""
-    if allow_custom:
-        choices = options + ["[自己输入]"]
-    else:
-        choices = options
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end > brace_start:
+        try:
+            return json.loads(text[brace_start:brace_end + 1])
+        except json.JSONDecodeError:
+            pass
 
-    answer = await questionary.select(
-        question,
-        choices=choices,
-        style=custom_style,
-        use_shortcuts=False,
-        use_indicator=True,
-    ).ask_async()
-
-    if answer == "[自己输入]":
-        answer = await questionary.text(
-            "请输入你的回答:",
-            style=custom_style,
-        ).ask_async()
-
-    return answer or ""
-
-
-# =============================================================================
-# AI Generation Functions
-# =============================================================================
-
-async def generate_dynamic_questions(goal: str, purpose: str) -> list[dict]:
-    """Use AI to generate context-specific questions."""
-    console.print("\n[dim]分析需求，生成针对性问题...[/dim]")
-
-    prompt = DYNAMIC_QUESTION_PROMPT.format(goal=goal, purpose=purpose)
-
-    result_text = ""
-    async for message in query(
-        prompt=prompt,
-        options=ClaudeCodeOptions(
-            system_prompt="你是一个帮助澄清项目需求的助手。只输出要求的格式，不要有多余解释。",
-            allowed_tools=[],
-            max_turns=1,
-        ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    result_text += block.text
-
-    return parse_dynamic_questions(result_text)
-
-
-async def generate_metrics(
-    goal: str,
-    purpose: str,
-    answers: dict,
-    eval_mode: str,
-) -> list[dict]:
-    """Use AI to generate metrics based on answers."""
-    console.print("\n[dim]根据回答生成评估指标...[/dim]")
-
-    answers_text = "\n".join([f"- {k}: {v}" for k, v in answers.items()])
-
-    prompt = METRIC_GENERATION_PROMPT.format(
-        goal=goal,
-        purpose=purpose,
-        answers=answers_text,
-        eval_mode=eval_mode,
-    )
-
-    result_text = ""
-    async for message in query(
-        prompt=prompt,
-        options=ClaudeCodeOptions(
-            system_prompt="你是一个帮助定义评估指标的助手。只输出要求的格式，不要有多余解释。",
-            allowed_tools=[],
-            max_turns=1,
-        ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    result_text += block.text
-
-    return parse_metrics(result_text)
+    return None
 
 
 # =============================================================================
@@ -356,100 +158,194 @@ BASE_METRICS = [
 # Main Clarification Functions
 # =============================================================================
 
-async def clarify_metrics(goal_description: str) -> tuple[MetricsConfig, EvalConfig, dict]:
+async def clarify_metrics(goal_description: str, cwd: str = ".", verbose: bool = False) -> tuple[MetricsConfig, EvalConfig, dict]:
     """
-    Clarify success metrics through dynamic Q&A.
+    Clarify success metrics through two-phase interactive Q&A.
+
+    Phase 1: Agent generates questions as JSON
+    Phase 2: Our code presents questions via Rich prompts
+    Phase 3: Agent generates metrics config based on answers
 
     Args:
         goal_description: The goal description
+        cwd: Working directory
+        verbose: Show detailed tool calls and thinking
 
     Returns:
         Tuple of (MetricsConfig, EvalConfig, all_answers)
     """
-    all_answers = {"goal": goal_description}
-
     console.print(f"\n[bold cyan]Success Metrics Configuration[/bold cyan]\n")
 
-    # Q1: Purpose
-    purpose = await ask_select(Q_PURPOSE["question"], Q_PURPOSE["options"], allow_custom=False)
-    all_answers["purpose"] = purpose
+    # Phase 1: Agent generates questions
+    questions_prompt = f"""帮用户配置项目的成功指标。
 
-    # Q2: Evaluation mode
-    console.print()
-    eval_mode = await ask_select(Q_EVAL_MODE["question"], Q_EVAL_MODE["options"], allow_custom=False)
-    all_answers["eval_mode"] = eval_mode
+项目描述：
+{goal_description}
+
+请生成需要问用户的问题，输出 JSON 格式：
+```json
+{{
+  "questions": [
+    {{
+      "question": "问题文本",
+      "options": ["选项1", "选项2", "选项3"]
+    }}
+  ]
+}}
+```
+
+必须包含的问题：
+1. 项目用途：生产部署 / 研究实验 / 学习探索 / 原型验证
+2. 评估模式：全自动(有benchmark) / 半自动(代理指标+人工确认) / 人工为主(真实环境测试)
+
+根据项目特点，再加 1-2 个针对性的技术约束问题（如延迟、准确率、成本等）。
+
+只输出 JSON，不要有其他文字。
+"""
+
+    sr = await stream_query(
+        prompt=questions_prompt,
+        options=ClaudeAgentOptions(
+            system_prompt="你是一个帮助配置项目评估指标的助手。只输出 JSON 格式的问题列表。",
+            max_turns=1,
+            cwd=cwd,
+        ),
+        agent_name="clarifier",
+        emoji="📝",
+        cwd=cwd,
+        verbose=verbose,
+        status_message="Generating metrics questions...",
+    )
+    questions_text = sr.text
+
+    # Parse questions and present to user
+    questions_json = _extract_json(questions_text)
+    questions_list = questions_json.get("questions", []) if questions_json else []
+
+    if not questions_list:
+        # Fallback: use hardcoded questions
+        questions_list = [
+            {"question": "项目用途是什么？", "options": ["生产部署", "研究实验", "学习探索", "原型验证"]},
+            {"question": "评估模式偏好？", "options": ["全自动(有benchmark)", "半自动(代理指标+人工确认)", "人工为主(真实环境测试)"]},
+        ]
+
+    # Phase 2: Present questions via Rich prompts
+    answers = _ask_user_rich(questions_list)
+    answers_text = _format_answers_for_prompt(answers)
+
+    if verbose:
+        console.print(f"[dim]Collected {len(answers)} answers[/dim]")
+
+    # Phase 3: Agent generates metrics based on answers
+    metrics_prompt = f"""根据以下信息生成评估指标配置。
+
+项目描述：
+{goal_description}
+
+用户回答：
+{answers_text}
+
+请输出 JSON 格式的评估指标配置：
+```json
+{{
+  "purpose": "项目用途",
+  "eval_mode": "评估模式",
+  "test_frequency": "测试频率（如适用）",
+  "batch_preference": "测试安排偏好（如适用）",
+  "category": "algorithm|web|api|cli|library|general",
+  "metrics": [
+    {{
+      "name": "metric_name_in_snake_case",
+      "type": "hard|soft|subjective",
+      "target": "目标值",
+      "why": "为什么重要",
+      "automation": "auto|manual|hybrid",
+      "proxy_metric": "代理指标（如适用）",
+      "batch_suggestion": "批量测试建议（如适用）"
+    }}
+  ]
+}}
+```
+
+注意：
+- metrics 数组应包含 2-4 个指标
+- 根据用户的回答选择合适的 category、type、automation 等
+- 只输出 JSON，不要有其他文字
+"""
+
+    sr = await stream_query(
+        prompt=metrics_prompt,
+        options=ClaudeAgentOptions(
+            system_prompt="你是一个帮助配置项目评估指标的助手。根据用户的回答生成结构化的指标配置。只输出 JSON。",
+            max_turns=1,
+            cwd=cwd,
+        ),
+        agent_name="clarifier",
+        emoji="📝",
+        cwd=cwd,
+        verbose=verbose,
+        status_message="Generating metrics config...",
+    )
+    result_text = sr.text
+
+    # Parse JSON output
+    all_answers = {"goal": goal_description}
+    json_obj = _extract_json(result_text)
+
+    if json_obj:
+        all_answers["purpose"] = json_obj.get("purpose", "")
+        all_answers["eval_mode"] = json_obj.get("eval_mode", "")
+        if json_obj.get("test_frequency"):
+            all_answers["test_frequency"] = json_obj["test_frequency"]
+        if json_obj.get("batch_preference"):
+            all_answers["batch_preference"] = json_obj["batch_preference"]
+        dynamic_metrics = json_obj.get("metrics", [])
+    else:
+        # Fallback: try to parse metrics from text format
+        all_answers["purpose"] = "原型验证"
+        all_answers["eval_mode"] = "全自动"
+        dynamic_metrics = parse_metrics(result_text)
 
     # Build EvalConfig
+    eval_mode = all_answers.get("eval_mode", "全自动")
     eval_config = EvalConfig(mode=eval_mode)
-
-    # If manual/hybrid, ask follow-up questions
-    if "人工" in eval_mode or "半自动" in eval_mode:
-        console.print()
-        test_freq = await ask_select(Q_TEST_FREQUENCY["question"], Q_TEST_FREQUENCY["options"], allow_custom=True)
-        all_answers["test_frequency"] = test_freq
-        eval_config.test_frequency = test_freq
-
-        console.print()
-        batch_pref = await ask_select(Q_BATCH_PREFERENCE["question"], Q_BATCH_PREFERENCE["options"], allow_custom=True)
-        all_answers["batch_preference"] = batch_pref
-        eval_config.batch_preference = batch_pref
-
-    # Generate dynamic questions
-    dynamic_questions = await generate_dynamic_questions(goal_description, purpose)
-
-    if dynamic_questions:
-        for q in dynamic_questions:
-            console.print()
-            answer = await ask_select(q["question"], q["options"], allow_custom=True)
-            all_answers[q["question"]] = answer
-
-    # Generate metrics
-    dynamic_metrics = await generate_metrics(goal_description, purpose, all_answers, eval_mode)
+    if all_answers.get("test_frequency"):
+        eval_config.test_frequency = all_answers["test_frequency"]
+    if all_answers.get("batch_preference"):
+        eval_config.batch_preference = all_answers["batch_preference"]
 
     # Combine base + dynamic metrics
     all_metrics = BASE_METRICS + dynamic_metrics
 
-    # Display metrics
-    console.print("\n[bold green]生成的评估指标[/bold green]\n")
-
-    table = Table(show_header=True)
-    table.add_column("指标", style="cyan", width=25)
-    table.add_column("类型", style="dim", width=10)
-    table.add_column("目标", style="yellow", width=15)
-    table.add_column("自动化", width=10)
-    table.add_column("为什么重要", width=35)
+    # Display metrics as vertical cards
+    print(f"\n  {BOLD}{GREEN}生成的评估指标{RESET}\n")
 
     for m in all_metrics:
-        auto_display = {
-            "auto": "[green]自动[/green]",
-            "manual": "[yellow]人工[/yellow]",
-            "hybrid": "[cyan]混合[/cyan]",
-        }.get(m.get("automation", "auto"), "自动")
-
-        table.add_row(
-            m.get('name', ''),
-            m.get('type', ''),
-            m.get('target', ''),
-            auto_display,
-            m.get('why', '')[:35],
+        name = m.get('name', '')
+        mtype = m.get('type', '')
+        auto_label = {"auto": "自动", "manual": "人工", "hybrid": "混合"}.get(
+            m.get("automation", "auto"), "自动"
         )
+        auto_color = {"auto": GREEN, "manual": YELLOW, "hybrid": CYAN}.get(
+            m.get("automation", "auto"), GREEN
+        )
+        target = m.get('target', '')
+        why = m.get('why', '')
 
-    console.print(table)
-
-    # Confirm
-    console.print()
-    confirm = await ask_select(
-        "这些指标可以吗？",
-        ["可以，就这样", "需要调整"],
-        allow_custom=True,
-    )
-
-    if confirm != "可以，就这样":
-        console.print(f"[dim]记录调整意见: {confirm}[/dim]")
-        all_answers["adjustment"] = confirm
+        tags = f"{DIM}{mtype} · {auto_color}{auto_label}{RESET}"
+        print(f"  {CYAN}╭{RESET} {BOLD}{CYAN}{name}{RESET}  {tags}")
+        if target:
+            print(f"  {CYAN}│{RESET} 目标: {YELLOW}{target}{RESET}")
+        if why:
+            print(f"  {CYAN}│{RESET} {DIM}{why}{RESET}")
+        print(f"  {CYAN}╰{RESET}\n")
 
     # Convert to MetricsConfig
-    category = detect_category(goal_description)
+    category_str = json_obj.get("category", "general") if json_obj else "general"
+    try:
+        category = TaskCategory(category_str)
+    except ValueError:
+        category = TaskCategory.GENERAL
     metrics_config = MetricsConfig(category=category, eval_config=eval_config)
 
     for m in all_metrics:
@@ -564,13 +460,18 @@ def generate_goal_md(
     return "\n".join(lines)
 
 
-async def clarify_requirements(initial_prompt: str, cwd: str = ".") -> str:
+async def clarify_requirements(initial_prompt: str, cwd: str = ".", verbose: bool = False) -> str:
     """
-    Clarify requirements through interactive Q&A with the user.
+    Clarify requirements through two-phase interactive Q&A.
+
+    Phase 1: Agent explores codebase and generates questions as JSON
+    Phase 2: Our code presents questions via Rich prompts
+    Phase 3: Agent generates clarified requirements using answers
 
     Args:
         initial_prompt: The user's initial feature request
         cwd: Working directory
+        verbose: Show detailed tool calls and thinking
 
     Returns:
         The clarified goal content (also written to goal.md)
@@ -578,102 +479,109 @@ async def clarify_requirements(initial_prompt: str, cwd: str = ".") -> str:
     init_ralph_dir(cwd)
 
     console.print(Panel(f"[bold]Feature Request:[/bold]\n{initial_prompt}", title="Input"))
-
-    # Phase 1: Generate clarifying questions about functionality
     console.print("\n[yellow]Analyzing requirements...[/yellow]\n")
 
-    questions_prompt = f"""User's feature request:
+    # Phase 1: Agent explores codebase and generates questions
+    explore_prompt = f"""User's feature request:
 {initial_prompt}
 
-First, explore the codebase to understand:
-1. Project structure and tech stack
-2. Existing patterns and conventions
-3. Related existing functionality
+请按以下流程操作：
+1. 探索代码库，了解项目结构、技术栈、现有模式
+2. 根据探索结果，生成需要问用户的澄清问题
 
-Then generate 3-5 clarifying questions with lettered options to better understand the requirements.
-Focus on scope, target users, core functionality.
+最后输出 JSON 格式的问题列表：
+```json
+{{
+  "codebase_context": "对代码库的简要理解",
+  "questions": [
+    {{
+      "question": "问题文本",
+      "options": ["选项1", "选项2", "选项3"]
+    }}
+  ]
+}}
+```
+
+问题应该关注：需求范围、目标用户、核心功能、技术约束。
+生成 2-4 个问题，每个问题 2-4 个选项。
+确保 JSON 是输出的最后一部分。
 """
 
-    questions_text = ""
-    async for message in query(
-        prompt=questions_prompt,
-        options=ClaudeCodeOptions(
+    sr = await stream_query(
+        prompt=explore_prompt,
+        options=ClaudeAgentOptions(
             system_prompt=CLARIFIER_SYSTEM_PROMPT,
             allowed_tools=[
                 "Read", "Glob", "Grep", "LSP",
                 "WebFetch", "WebSearch",
             ],
-            max_turns=8,
+            max_turns=15,
             cwd=cwd,
         ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    questions_text += block.text
+        agent_name="clarifier",
+        emoji="🔍",
+        cwd=cwd,
+        verbose=verbose,
+        show_tools=True,
+    )
+    explore_text = sr.text
 
-    # Display questions and get answers
-    console.print(Panel(questions_text, title="Clarifying Questions"))
+    # Parse questions and present to user
+    questions_json = _extract_json(explore_text)
+    codebase_context = questions_json.get("codebase_context", "") if questions_json else ""
+    questions_list = questions_json.get("questions", []) if questions_json else []
 
-    answers = await questionary.text(
-        "Your answers (e.g., 1A, 2B, 3C or detailed response):",
-        style=custom_style,
-    ).ask_async() or ""
+    if not questions_list:
+        # Fallback: use generic questions
+        questions_list = [
+            {"question": "这个功能的目标用户是谁？", "options": ["开发者", "终端用户", "运维人员", "所有人"]},
+            {"question": "核心需求是什么？", "options": ["新功能", "性能优化", "Bug修复", "重构"]},
+        ]
 
-    # Phase 2: Generate summary
-    console.print("\n[yellow]Generating clarified requirements...[/yellow]\n")
+    # Phase 2: Present questions via Rich prompts
+    console.print("\n[bold cyan]Clarification Questions[/bold cyan]")
+    answers = _ask_user_rich(questions_list)
+    answers_text = _format_answers_for_prompt(answers)
 
-    summary_prompt = f"""Original request:
+    # Phase 3: Agent generates clarified requirements using answers
+    clarify_prompt = f"""User's feature request:
 {initial_prompt}
 
-Questions asked:
-{questions_text}
+代码库上下文：
+{codebase_context}
 
-User's answers:
-{answers}
+用户对澄清问题的回答：
+{answers_text}
 
-Based on this, provide a clear goal document with:
-1. A clear, detailed description of what needs to be built
-2. The scope (what's included)
-3. Non-goals (what's explicitly NOT included)
-4. Any important context from the codebase exploration
+请根据以上信息，生成 clarified requirements（markdown 格式）。
 
-Format as markdown.
+输出要求：
+- Clear, detailed description of what needs to be built
+- Scope (what's included)
+- Non-goals (what's explicitly NOT included)
+- Important context from codebase exploration
+- Temporal Topics (需验证的时效性话题)
 """
 
-    summary_text = ""
-    async for message in query(
-        prompt=summary_prompt,
-        options=ClaudeCodeOptions(
+    sr = await stream_query(
+        prompt=clarify_prompt,
+        options=ClaudeAgentOptions(
             system_prompt=CLARIFIER_SYSTEM_PROMPT,
-            allowed_tools=["Read", "Glob", "Grep", "LSP", "WebFetch", "WebSearch"],
-            max_turns=5,
+            max_turns=3,
             cwd=cwd,
         ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    summary_text += block.text
+        agent_name="clarifier",
+        emoji="📝",
+        cwd=cwd,
+        verbose=verbose,
+        status_message="Generating clarified requirements...",
+    )
+    summary_text = sr.text
 
     console.print(Panel(summary_text, title="Clarified Requirements"))
 
-    # Confirm
-    confirm = await ask_select(
-        "Proceed with these requirements?",
-        ["Yes", "No", "Edit"],
-        allow_custom=False,
-    )
-
-    if confirm == "No":
-        raise KeyboardInterrupt("User cancelled")
-    elif confirm == "Edit":
-        edited = await questionary.text("Enter your revised requirements:", style=custom_style).ask_async()
-        if edited:
-            summary_text = edited
-
-    # Phase 3: Clarify success metrics (dynamic)
-    metrics_config, eval_config, _ = await clarify_metrics(summary_text)
+    # Phase 2: Clarify success metrics
+    metrics_config, eval_config, _ = await clarify_metrics(summary_text, cwd, verbose=verbose)
 
     # Build goal.md content
     goal_content = generate_goal_md(
@@ -681,8 +589,6 @@ Format as markdown.
         summary_text=summary_text,
         metrics_config=metrics_config,
         eval_config=eval_config,
-        qa_text=questions_text,
-        answers_text=answers,
     )
 
     # Write to goal.md
@@ -706,8 +612,8 @@ async def quick_clarify(initial_prompt: str, cwd: str = ".") -> str:
     """
     init_ralph_dir(cwd)
 
-    # Use default metrics based on detected category
-    category = detect_category(initial_prompt)
+    # Use general default metrics (category detection moved to agent prompt)
+    category = TaskCategory.GENERAL
     metrics_config = get_default_metrics(category)
     eval_config = EvalConfig(mode="全自动")
 
@@ -763,18 +669,18 @@ PROPOSAL_PARSE_PROMPT = """
 """
 
 
-async def explore_and_propose(initial_prompt: str, cwd: str = ".") -> str:
+async def explore_and_propose(initial_prompt: str, cwd: str = ".", verbose: bool = False) -> str:
     """
     Clarifier v2: Explore possible approaches and propose options to user.
 
-    This is the "explore + propose" mode that:
-    1. Researches this direction to discover possibilities
-    2. Deeply analyzes each approach's pros/cons
-    3. Makes recommendations for user to choose from
+    Phase 1: Agent explores codebase and generates proposals as JSON
+    Phase 2: Our code presents proposals via Rich prompts
+    Phase 3: Agent generates clarified goal based on user's choice
 
     Args:
         initial_prompt: The user's initial (possibly vague) request
         cwd: Working directory
+        verbose: Show detailed tool calls and thinking
 
     Returns:
         The clarified goal content (also written to goal.md)
@@ -787,123 +693,125 @@ async def explore_and_propose(initial_prompt: str, cwd: str = ".") -> str:
         border_style="cyan",
     ))
 
-    # Phase 1: Deep exploration with AI
-    console.print("\n[yellow]🔍 Phase 1: 深度探索中...[/yellow]")
-    console.print("[dim]Agent 正在研究可能的实现方案，这可能需要几分钟...[/dim]\n")
+    console.print("\n[yellow]深度探索中...[/yellow]")
+    console.print("[dim]Agent 正在研究可能的实现方案...[/dim]\n")
 
-    explore_prompt = CLARIFIER_V2_EXPLORE_PROMPT.format(user_request=initial_prompt)
+    # Phase 1: Agent explores and generates proposals as JSON
+    explore_prompt = CLARIFIER_V2_EXPLORE_PROMPT.format(user_request=initial_prompt) + """
 
-    exploration_result = ""
-    async for message in query(
+完成探索后，输出 JSON 格式的方案提议：
+```json
+{
+  "understanding": "对用户需求的一句话理解",
+  "proposals": [
+    {
+      "name": "方案名称",
+      "summary": "一句话概述",
+      "pros": ["优点1", "优点2"],
+      "cons": ["缺点1", "缺点2"]
+    }
+  ],
+  "follow_up_questions": [
+    {
+      "question": "需要进一步了解的问题",
+      "options": ["选项1", "选项2", "选项3"]
+    }
+  ]
+}
+```
+
+确保 JSON 是输出的最后一部分。
+"""
+
+    sr = await stream_query(
         prompt=explore_prompt,
-        options=ClaudeCodeOptions(
+        options=ClaudeAgentOptions(
             system_prompt=CLARIFIER_V2_SYSTEM_PROMPT,
             allowed_tools=[
                 "Read", "Glob", "Grep", "LSP",
                 "WebFetch", "WebSearch", "Task",
             ],
-            max_turns=20,  # Allow more turns for deep exploration
+            max_turns=25,
             cwd=cwd,
         ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    exploration_result += block.text
+        agent_name="clarifier_v2",
+        emoji="🔍",
+        cwd=cwd,
+        verbose=verbose,
+        show_tools=True,
+    )
+    explore_text = sr.text
 
-    # Display the exploration result
-    console.print("\n[bold cyan]═══ 探索完成 ═══[/bold cyan]\n")
-    console.print(Panel(exploration_result, title="方案分析", border_style="cyan"))
+    # Parse proposals and present to user
+    proposals_json = _extract_json(explore_text)
 
-    # Phase 2: User selection
-    console.print("\n[bold yellow]请选择一个方案:[/bold yellow]\n")
+    if proposals_json and proposals_json.get("proposals"):
+        understanding = proposals_json.get("understanding", "")
+        proposals = proposals_json["proposals"]
 
-    # Parse proposals from the exploration result to create options
-    # Look for "方案 A:", "方案 B:", etc.
-    proposal_pattern = r"###\s*方案\s*([A-Z]):\s*([^\n]+)"
-    proposals = re.findall(proposal_pattern, exploration_result)
+        if understanding:
+            console.print(f"\n[bold]理解:[/bold] {understanding}\n")
 
-    if proposals:
-        options = [f"方案 {letter}: {name.strip()}" for letter, name in proposals]
-        options.append("其他想法 (自己输入)")
+        # Present proposals as a question
+        proposal_question = {
+            "question": "请选择一个实现方案：",
+            "options": [
+                {"label": f"{p['name']}: {p['summary']}"} for p in proposals
+            ],
+        }
+        answers = _ask_user_rich([proposal_question])
 
-        selection = await ask_select(
-            "选择你想要的方案:",
-            options,
-            allow_custom=False,
-        )
-
-        if "其他想法" in selection:
-            selection = await questionary.text(
-                "请描述你的想法:",
-                style=custom_style,
-            ).ask_async() or ""
+        # Also ask follow-up questions if any
+        follow_ups = proposals_json.get("follow_up_questions", [])
+        if follow_ups:
+            console.print("\n[bold cyan]Follow-up Questions[/bold cyan]")
+            follow_up_answers = _ask_user_rich(follow_ups)
+            answers.update(follow_up_answers)
     else:
-        # Fallback if parsing failed
-        selection = await questionary.text(
-            "选择一个方案 (A/B/C) 或输入其他想法:",
-            style=custom_style,
-        ).ask_async() or "A"
+        # Fallback: generic question
+        answers = _ask_user_rich([
+            {"question": "你对这个需求有什么具体的偏好？", "options": ["简单实现", "完整方案", "最佳实践"]},
+        ])
 
-    console.print(f"\n[green]✓ 选择了: {selection}[/green]")
+    answers_text = _format_answers_for_prompt(answers)
 
-    # Phase 3: Generate clarified goal based on selection
-    console.print("\n[yellow]📝 Phase 2: 生成明确目标...[/yellow]\n")
-
-    goal_generation_prompt = f"""用户的原始需求：
+    # Phase 3: Agent generates clarified goal based on user's choice
+    goal_prompt = f"""用户需求：
 {initial_prompt}
 
-探索分析结果：
-{exploration_result}
+探索结果和方案：
+{explore_text[:3000]}
 
-用户选择：
-{selection}
+用户的选择和回答：
+{answers_text}
 
-请根据用户的选择，生成一个明确、可执行的目标描述。格式要求：
-
-1. **Clarified Description** - 基于选择的方案，详细描述要做什么
-2. **Scope** - 包含哪些功能
-3. **Non-goals** - 明确不包含什么
-4. **Technical Approach** - 选定方案的技术细节
-5. **Risks and Mitigations** - 主要风险和应对策略
-
-使用 Markdown 格式输出。
+请根据以上信息，生成明确的目标描述（markdown 格式），包含：
+- Clarified Description
+- Scope
+- Non-goals
+- Technical Approach
+- Risks and Mitigations
 """
 
-    summary_text = ""
-    async for message in query(
-        prompt=goal_generation_prompt,
-        options=ClaudeCodeOptions(
-            system_prompt="你是一个帮助生成项目目标文档的助手。请基于用户的选择生成清晰、详细的目标描述。",
-            allowed_tools=[],
-            max_turns=1,
+    sr = await stream_query(
+        prompt=goal_prompt,
+        options=ClaudeAgentOptions(
+            system_prompt=CLARIFIER_V2_SYSTEM_PROMPT,
+            max_turns=3,
             cwd=cwd,
         ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    summary_text += block.text
+        agent_name="clarifier_v2",
+        emoji="📝",
+        cwd=cwd,
+        verbose=verbose,
+        status_message="Generating goal summary...",
+    )
+    summary_text = sr.text
 
     console.print(Panel(summary_text, title="明确后的目标", border_style="green"))
 
-    # Phase 4: Confirm or edit
-    confirm = await ask_select(
-        "确认这个目标？",
-        ["确认", "需要修改"],
-        allow_custom=False,
-    )
-
-    if confirm == "需要修改":
-        edited = await questionary.text(
-            "请输入修改后的目标描述:",
-            style=custom_style,
-        ).ask_async()
-        if edited:
-            summary_text = edited
-
-    # Phase 5: Configure metrics
-    metrics_config, eval_config, _ = await clarify_metrics(summary_text)
+    # Configure metrics
+    metrics_config, eval_config, _ = await clarify_metrics(summary_text, cwd, verbose=verbose)
 
     # Build goal.md
     goal_content = generate_goal_md(
@@ -911,8 +819,6 @@ async def explore_and_propose(initial_prompt: str, cwd: str = ".") -> str:
         summary_text=summary_text,
         metrics_config=metrics_config,
         eval_config=eval_config,
-        qa_text=f"## 探索分析\n\n{exploration_result}",
-        answers_text=f"用户选择: {selection}",
     )
 
     # Write to goal.md
@@ -926,6 +832,7 @@ async def clarify_requirements_v2(
     initial_prompt: str,
     cwd: str = ".",
     mode: str = "auto",
+    verbose: bool = False,
 ) -> str:
     """
     Unified clarification entry point that chooses the best mode.
@@ -937,14 +844,15 @@ async def clarify_requirements_v2(
             - auto: Automatically choose based on request clarity
             - ask: Use traditional Q&A mode
             - explore: Use explore+propose mode
+        verbose: Show detailed tool calls and thinking
 
     Returns:
         The clarified goal content
     """
     if mode == "ask":
-        return await clarify_requirements(initial_prompt, cwd)
+        return await clarify_requirements(initial_prompt, cwd, verbose=verbose)
     elif mode == "explore":
-        return await explore_and_propose(initial_prompt, cwd)
+        return await explore_and_propose(initial_prompt, cwd, verbose=verbose)
     else:
         # Auto mode: detect based on keywords
         vague_indicators = [
@@ -960,7 +868,7 @@ async def clarify_requirements_v2(
 
         if is_vague:
             console.print("[dim]检测到模糊需求，使用探索+提议模式[/dim]")
-            return await explore_and_propose(initial_prompt, cwd)
+            return await explore_and_propose(initial_prompt, cwd, verbose=verbose)
         else:
             console.print("[dim]需求相对明确，使用传统 Q&A 模式[/dim]")
-            return await clarify_requirements(initial_prompt, cwd)
+            return await clarify_requirements(initial_prompt, cwd, verbose=verbose)

@@ -109,7 +109,6 @@ class Checkpoint:
         passed = False
         if target:
             # Parse target like ">= 70%" or "<= 100ms"
-            import re
             match = re.match(r"([<>=]+)\s*(\d+(?:\.\d+)?)", target)
             if match:
                 op, val = match.groups()
@@ -186,12 +185,14 @@ def file_lock(lock_path: Path, timeout: float = 30.0):
                 break  # Successfully acquired lock
             except BlockingIOError:
                 if time.time() - start_time > timeout:
-                    os.close(lock_fd)
                     raise TimeoutError(f"Could not acquire file lock within {timeout}s: {lock_path}")
                 time.sleep(0.1)
         yield
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass  # fd may be invalid if something went wrong
         os.close(lock_fd)
 
 
@@ -209,11 +210,13 @@ def _atomic_write(path: Path, content: str) -> None:
     try:
         os.write(fd, content.encode("utf-8"))
         os.close(fd)
+        fd = -1  # Mark as closed
         # Atomic rename
         os.rename(temp_path, path)
     except Exception:
-        # Clean up temp file on failure
-        os.close(fd) if not os.get_inheritable(fd) else None
+        # Clean up fd if still open
+        if fd >= 0:
+            os.close(fd)
         if os.path.exists(temp_path):
             os.unlink(temp_path)
         raise
@@ -1120,32 +1123,35 @@ def add_verified_info(
             return
 
         today = datetime.now().strftime("%Y-%m-%d")
-        entry = f"- [Verified {today}] {topic}: {finding} (source: {source_url})\n"
+        entry = f"- [Verified {today}] {topic}: {finding} (source: {source_url})"
 
-        # Find the Verified Information section and append
         if "## Verified Information" in pool_content:
-            # Check if "(none yet)" placeholder exists
-            if "(none yet)" in pool_content and "## Verified Information" in pool_content:
-                pool_content = pool_content.replace(
-                    "## Verified Information (时效性验证缓存)\n\n<!--\nFormat: [Verified YYYY-MM-DD] <topic>: <finding> (source: <url>)\nWorkers should check here before searching to avoid duplicate queries.\n-->\n\n(none yet)",
-                    f"## Verified Information (时效性验证缓存)\n\n<!--\nFormat: [Verified YYYY-MM-DD] <topic>: <finding> (source: <url>)\nWorkers should check here before searching to avoid duplicate queries.\n-->\n\n{entry}"
-                )
-            else:
-                # Append after the comment block
-                pool_content = pool_content.replace(
-                    "## Verified Information (时效性验证缓存)\n\n<!--\nFormat: [Verified YYYY-MM-DD] <topic>: <finding> (source: <url>)\nWorkers should check here before searching to avoid duplicate queries.\n-->\n\n",
-                    f"## Verified Information (时效性验证缓存)\n\n<!--\nFormat: [Verified YYYY-MM-DD] <topic>: <finding> (source: <url>)\nWorkers should check here before searching to avoid duplicate queries.\n-->\n\n{entry}"
-                )
+            # Remove "(none yet)" placeholder if present
+            pool_content = pool_content.replace("(none yet)", "", 1) if "(none yet)" in pool_content else pool_content
+
+            # Find the next section after "## Verified Information" to insert before it
+            vi_match = re.search(r"(## Verified Information[^\n]*\n)", pool_content)
+            if vi_match:
+                vi_end = vi_match.end()
+                # Find the next "## " section header after the Verified Information header
+                next_section = re.search(r"\n## ", pool_content[vi_end:])
+                if next_section:
+                    insert_pos = vi_end + next_section.start()
+                else:
+                    insert_pos = len(pool_content.rstrip())
+
+                # Insert the entry before the next section (with trailing newline)
+                pool_content = pool_content[:insert_pos].rstrip() + "\n" + entry + "\n\n" + pool_content[insert_pos:].lstrip("\n")
         else:
             # Section doesn't exist, add it before Progress Log
             if "## Progress Log" in pool_content:
                 pool_content = pool_content.replace(
                     "## Progress Log",
-                    f"## Verified Information (时效性验证缓存)\n\n{entry}\n## Progress Log"
+                    f"## Verified Information (时效性验证缓存)\n\n{entry}\n\n## Progress Log"
                 )
             else:
                 # Append at end
-                pool_content = pool_content.rstrip() + f"\n\n## Verified Information (时效性验证缓存)\n\n{entry}"
+                pool_content = pool_content.rstrip() + f"\n\n## Verified Information (时效性验证缓存)\n\n{entry}\n"
 
         _atomic_write(base / POOL_FILE, pool_content)
 
@@ -1265,6 +1271,7 @@ def clear_pivot_recommendation(task_id: str, cwd: str = ".") -> None:
     Clear or mark as processed a pivot recommendation from pool.md.
 
     Changes [PIVOT_RECOMMENDED] to [PIVOT_PROCESSED] for the given task.
+    Uses regex to tolerate format variants (bold, extra spaces, etc.).
 
     Uses lock scope that covers both read and write for atomicity.
     """
@@ -1276,16 +1283,17 @@ def clear_pivot_recommendation(task_id: str, cwd: str = ".") -> None:
         if not pool_content:
             return
 
-        # Replace [PIVOT_RECOMMENDED] with [PIVOT_PROCESSED] for this task
-        # Pattern: **[PIVOT_RECOMMENDED]** task_id:
-        old_pattern = f"**[PIVOT_RECOMMENDED]** {task_id}:"
-        new_pattern = f"**[PIVOT_PROCESSED]** {task_id}:"
-        pool_content = pool_content.replace(old_pattern, new_pattern)
-
-        # Also handle format without asterisks
-        old_pattern2 = f"[PIVOT_RECOMMENDED] {task_id}:"
-        new_pattern2 = f"[PIVOT_PROCESSED] {task_id}:"
-        pool_content = pool_content.replace(old_pattern2, new_pattern2)
+        # Use regex to match any line containing [PIVOT_RECOMMENDED] and the task_id.
+        # Tolerates: **[PIVOT_RECOMMENDED]**, [PIVOT_RECOMMENDED], extra spaces,
+        # bold markers around it, etc.
+        pattern = re.compile(
+            r'(\*{0,2})\[PIVOT_RECOMMENDED\](\*{0,2})\s*' + re.escape(task_id),
+            re.IGNORECASE,
+        )
+        pool_content = pattern.sub(
+            lambda m: f'{m.group(1)}[PIVOT_PROCESSED]{m.group(2)} {task_id}',
+            pool_content,
+        )
 
         _atomic_write(base / POOL_FILE, pool_content)
 
@@ -1299,3 +1307,262 @@ def has_pivot_recommendation(cwd: str = ".") -> bool:
     """
     pool_content = read_pool(cwd)
     return "[PIVOT_RECOMMENDED]" in pool_content
+
+
+# -----------------------------------------------------------------------------
+# Context Compaction (上下文压缩)
+# -----------------------------------------------------------------------------
+
+PROGRESS_ARCHIVE_FILE = f"{RALPH_DIR}/progress_archive.md"
+POOL_WORD_COUNT_THRESHOLD = 1500
+
+
+def get_pool_word_count(cwd: str = ".") -> int:
+    """Get word count of pool.md."""
+    content = read_pool(cwd)
+    if not content:
+        return 0
+    return len(content.split())
+
+
+def pool_needs_compaction(cwd: str = ".") -> bool:
+    """Check if pool.md exceeds the word count threshold."""
+    return get_pool_word_count(cwd) > POOL_WORD_COUNT_THRESHOLD
+
+
+def extract_pool_sections(pool_content: str) -> dict[str, str]:
+    """
+    Extract named sections from pool.md.
+
+    Returns dict mapping section name to content (including header).
+    """
+    sections = {}
+    current_name = "_header"
+    current_lines = []
+
+    for line in pool_content.split("\n"):
+        if line.startswith("## "):
+            if current_lines:
+                sections[current_name] = "\n".join(current_lines)
+            current_name = line.lstrip("# ").strip()
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+
+    if current_lines:
+        sections[current_name] = "\n".join(current_lines)
+
+    return sections
+
+
+def archive_progress_log(pool_content: str, keep_recent: int = 5, cwd: str = ".") -> str:
+    """
+    Archive old progress log entries, keeping only the most recent ones.
+
+    Returns the updated pool_content with trimmed Progress Log.
+    Old entries are appended to .ralph/progress_archive.md.
+    """
+    # Find Progress Log section
+    log_match = re.search(
+        r"(## Progress Log\s*\n)(.*?)(\Z)",
+        pool_content,
+        re.DOTALL,
+    )
+    if not log_match:
+        return pool_content
+
+    header = log_match.group(1)
+    log_body = log_match.group(2)
+
+    # Split into entries (each starts with ### YYYY-MM-DD)
+    entries = re.split(r"(?=\n### \d{4}-\d{2}-\d{2})", log_body)
+    entries = [e for e in entries if e.strip()]
+
+    if len(entries) <= keep_recent:
+        return pool_content  # Nothing to archive
+
+    # Split into old and recent
+    old_entries = entries[:-keep_recent]
+    recent_entries = entries[-keep_recent:]
+
+    # Archive old entries
+    archive_path = Path(cwd) / PROGRESS_ARCHIVE_FILE
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(archive_path, "a") as f:
+        for entry in old_entries:
+            f.write(entry.rstrip() + "\n")
+
+    # Rebuild pool content
+    new_log = header + "\n".join(recent_entries)
+    updated = pool_content[:log_match.start()] + new_log
+    return updated
+
+
+async def compact_pool(cwd: str = ".") -> bool:
+    """
+    Compact pool.md using Claude to summarize verbose sections.
+
+    Steps:
+    1. Archive old progress log entries to progress_archive.md
+    2. Use Claude to compress Findings and Failure Assumptions
+    3. Remove expired Verified Information (>7 days)
+
+    Returns True if compaction was performed.
+    """
+    from .prompts import COMPACTION_PROMPT
+
+    pool_content = read_pool(cwd)
+    if not pool_content:
+        return False
+
+    # Step 1: Archive progress log (code-based, no LLM needed)
+    pool_content = archive_progress_log(pool_content, keep_recent=5, cwd=cwd)
+
+    # Step 2: Use Claude to compress the rest
+    today = datetime.now().strftime("%Y-%m-%d")
+    prompt = COMPACTION_PROMPT.format(today=today, pool_content=pool_content)
+
+    from claude_agent_sdk import ClaudeAgentOptions
+    from .logger import stream_query
+
+    sr = await stream_query(
+        prompt=prompt,
+        options=ClaudeAgentOptions(
+            system_prompt="You are a concise text compactor. Output only the compressed pool.md content.",
+            allowed_tools=[],
+            permission_mode="default",
+            max_turns=1,
+            cwd=cwd,
+        ),
+        agent_name="compactor",
+        emoji="📦",
+        cwd=cwd,
+        verbose=False,
+    )
+
+    # Extract the compacted content from response
+    compacted = sr.text.strip()
+
+    # Sanity check: compacted content should have key sections
+    if "## Active Tasks" not in compacted and "## Goal Summary" not in compacted:
+        # Compaction output looks invalid, skip
+        return False
+
+    write_pool(compacted, cwd)
+    return True
+
+
+# -----------------------------------------------------------------------------
+# Handoff Notes (Resume 支持)
+# -----------------------------------------------------------------------------
+
+HANDOFF_FILE = f"{RALPH_DIR}/handoff.md"
+
+
+def generate_handoff_note(cwd: str = ".") -> str:
+    """
+    Generate a handoff note summarizing current session state.
+
+    Reads pool.md and task files to build a structured summary
+    for the next session to resume from.
+
+    Returns the handoff content.
+    """
+    pool_content = read_pool(cwd)
+    if not pool_content:
+        return ""
+
+    # Parse task statuses from pool
+    task_ids = extract_task_ids_from_pool(cwd)
+
+    completed = []
+    in_progress = []
+    pending = []
+
+    for tid in task_ids:
+        task_content = read_task(tid, cwd)
+        if not task_content:
+            pending.append(tid)
+            continue
+
+        content_lower = task_content.lower()
+        if "## status\ncompleted" in content_lower or "## status\npassed" in content_lower:
+            completed.append(tid)
+        elif "## status\npending" in content_lower:
+            pending.append(tid)
+        else:
+            in_progress.append(tid)
+
+    # Extract key findings from pool
+    findings_match = re.search(
+        r"## Findings\s*\n(.*?)(?=\n## |\Z)",
+        pool_content,
+        re.DOTALL,
+    )
+    findings_text = findings_match.group(1).strip() if findings_match else "(none)"
+
+    # Extract failure assumptions
+    failure_match = re.search(
+        r"## Failure Assumptions\s*\n(.*?)(?=\n## |\Z)",
+        pool_content,
+        re.DOTALL,
+    )
+    failure_text = failure_match.group(1).strip() if failure_match else "(none)"
+
+    # Extract recent progress (last 3 entries)
+    progress_match = re.search(
+        r"## Progress Log\s*\n(.*?)(?=\Z)",
+        pool_content,
+        re.DOTALL,
+    )
+    progress_text = ""
+    if progress_match:
+        entries = re.split(r"(?=### \d{4}-\d{2}-\d{2})", progress_match.group(1))
+        entries = [e.strip() for e in entries if e.strip()]
+        recent = entries[-3:] if len(entries) > 3 else entries
+        progress_text = "\n".join(recent)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    handoff = f"""# Handoff Note
+Generated: {now}
+
+## 当前状态
+- 已完成: {', '.join(completed) if completed else '(none)'}
+- 进行中: {', '.join(in_progress) if in_progress else '(none)'}
+- 待处理: {', '.join(pending) if pending else '(none)'}
+
+## 关键发现
+{findings_text}
+
+## 失败假设
+{failure_text}
+
+## 最近进展
+{progress_text}
+
+## 建议下一步
+(Planner should analyze the above and decide)
+"""
+
+    # Write to file
+    path = Path(cwd) / HANDOFF_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(handoff)
+
+    return handoff
+
+
+def read_handoff_note(cwd: str = ".") -> str:
+    """Read handoff note if it exists."""
+    path = Path(cwd) / HANDOFF_FILE
+    if not path.exists():
+        return ""
+    return path.read_text()
+
+
+def clear_handoff_note(cwd: str = ".") -> None:
+    """Remove handoff note after it's been consumed."""
+    path = Path(cwd) / HANDOFF_FILE
+    if path.exists():
+        path.unlink()

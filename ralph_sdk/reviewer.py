@@ -7,17 +7,17 @@ Possible verdicts:
 - FAILED: fundamental issue, need different approach
 """
 
-import json
 import re
 from dataclasses import dataclass
 from enum import Enum
 
-from claude_code_sdk import AssistantMessage, ClaudeCodeOptions, query
+from claude_agent_sdk import ClaudeAgentOptions
 from rich.console import Console
 
+from .logger import log_tool_call, stream_query
 from .pool import read_goal, read_task
 from .prompts import REVIEWER_SYSTEM_PROMPT, build_reviewer_prompt
-from .worker import format_tool_line
+from .utils import extract_json
 
 console = Console()
 
@@ -33,28 +33,7 @@ class ReviewResult:
     verdict: Verdict
     reason: str
     suggestions: str = ""
-
-
-def _extract_json(text: str) -> dict | None:
-    """Extract a JSON object from text, handling common LLM output patterns."""
-    # Pattern 1: JSON in markdown code fence
-    fence_match = re.search(r"```(?:json)?\s*\n(\{.*?\})\s*\n```", text, re.DOTALL)
-    if fence_match:
-        try:
-            return json.loads(fence_match.group(1))
-        except json.JSONDecodeError:
-            pass
-
-    # Pattern 2: Bare JSON object
-    brace_start = text.find("{")
-    brace_end = text.rfind("}")
-    if brace_start != -1 and brace_end > brace_start:
-        try:
-            return json.loads(text[brace_start:brace_end + 1])
-        except json.JSONDecodeError:
-            pass
-
-    return None
+    result_stats: object = None  # ResultMessage from SDK
 
 
 def parse_reviewer_output(text: str) -> ReviewResult:
@@ -63,13 +42,13 @@ def parse_reviewer_output(text: str) -> ReviewResult:
     Tries JSON first (more reliable), falls back to regex for backwards compatibility.
     """
     # Try JSON parsing first
-    json_obj = _extract_json(text)
+    json_obj = extract_json(text)
     if json_obj and "verdict" in json_obj:
         verdict_str = json_obj["verdict"].lower()
         try:
             verdict = Verdict(verdict_str)
         except ValueError:
-            verdict = Verdict.PASSED
+            verdict = Verdict.RETRY
         return ReviewResult(
             verdict=verdict,
             reason=json_obj.get("reason", ""),
@@ -78,12 +57,12 @@ def parse_reviewer_output(text: str) -> ReviewResult:
 
     # Fallback: regex parsing
     verdict_match = re.search(r"VERDICT:\s*(\w+)", text, re.IGNORECASE)
-    verdict_str = verdict_match.group(1).lower() if verdict_match else "passed"
+    verdict_str = verdict_match.group(1).lower() if verdict_match else "retry"
 
     try:
         verdict = Verdict(verdict_str)
     except ValueError:
-        verdict = Verdict.PASSED
+        verdict = Verdict.RETRY
 
     reason_match = re.search(r"REASON:\s*(.+?)(?=\n(?:SUGGESTIONS:|$))", text, re.IGNORECASE | re.DOTALL)
     reason = reason_match.group(1).strip() if reason_match else ""
@@ -128,39 +107,23 @@ async def review(task_id: str, cwd: str = ".", verbose: bool = False) -> ReviewR
         task_detail=task_detail,
     )
 
-    # Run reviewer query with output
-    result_text = ""
-    tool_count = 0
-
-    async for message in query(
+    # Run reviewer query with unified streaming
+    sr = await stream_query(
         prompt=prompt,
-        options=ClaudeCodeOptions(
+        options=ClaudeAgentOptions(
             system_prompt=REVIEWER_SYSTEM_PROMPT,
             allowed_tools=["Read", "Bash", "Glob", "Grep", "LSP", "WebSearch"],
+            permission_mode="acceptEdits",
             max_turns=10,
             cwd=cwd,
         ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                # Handle text
-                if hasattr(block, "text") and block.text:
-                    result_text += block.text
-                    if verbose:
-                        text = block.text.strip()
-                        if text and len(text) > 20:
-                            lines = text.split('\n')
-                            first_line = lines[0][:80]
-                            if len(lines[0]) > 80:
-                                first_line += "..."
-                            console.print(f"     [italic bright_black]📋 {first_line}[/italic bright_black]")
-
-                # Handle tool use
-                if hasattr(block, "name") and hasattr(block, "input"):
-                    tool_count += 1
-                    if verbose:
-                        tool_line = format_tool_line(block.name, block.input, cwd)
-                        console.print(f"[bright_black][{tool_count:2d}][/bright_black] {tool_line}")
+        agent_name="reviewer",
+        emoji="📋",
+        cwd=cwd,
+        verbose=verbose,
+    )
 
     # Parse and return result
-    return parse_reviewer_output(result_text)
+    review_result = parse_reviewer_output(sr.text)
+    review_result.result_stats = sr.result_stats
+    return review_result

@@ -8,6 +8,7 @@ Used by:
 """
 
 import re
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -284,6 +285,10 @@ def detect_category(goal: str, file_patterns: list[str] | None = None) -> TaskCa
     """
     Detect task category from goal description and file patterns.
 
+    .. deprecated::
+        Category detection is now handled by the agent via prompt.
+        Kept for backward compatibility with experiment tests.
+
     Args:
         goal: The goal description text
         file_patterns: List of files in the project (optional)
@@ -291,6 +296,11 @@ def detect_category(goal: str, file_patterns: list[str] | None = None) -> TaskCa
     Returns:
         Detected TaskCategory
     """
+    warnings.warn(
+        "detect_category() is deprecated. Category detection is now handled by the agent via prompt.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     goal_lower = goal.lower()
 
     # Check for algorithm-related keywords
@@ -422,6 +432,10 @@ def generate_metrics_questions(config: MetricsConfig) -> str:
 def parse_metrics_from_goal(goal_content: str) -> Optional[MetricsConfig]:
     """
     Parse metrics configuration from goal.md content.
+
+    DEPRECATED: Metrics extraction is now handled by the evaluator agent via prompt.
+    The evaluator reads goal.md directly and extracts metrics from the Success Metrics section.
+    Kept for backward compatibility with experiment tests.
 
     Returns None if no metrics section found.
     """

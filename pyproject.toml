@@ -5,9 +5,8 @@ description = "Ralph autonomous agent loop using Claude Agent SDK"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "claude-code-sdk>=0.0.20",
+    "claude-agent-sdk>=0.1.31",
     "pydantic>=2.0.0",
-    "questionary>=2.0.0",
     "rich>=13.0.0",
     "typer>=0.9.0",
 ]

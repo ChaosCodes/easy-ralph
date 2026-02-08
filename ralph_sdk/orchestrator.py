@@ -8,23 +8,20 @@ Flow:
 """
 
 import asyncio
+import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
-from claude_code_sdk import AssistantMessage, ClaudeCodeOptions, query
+from claude_agent_sdk import ClaudeAgentOptions
 from rich.console import Console
 from rich.prompt import Prompt
 
 from .clarifier import clarify_requirements, clarify_requirements_v2, quick_clarify
-from .evaluator import evaluate
-from .logger import SessionLogger
-from .metrics import (
-    AutomationLevel,
-    TaskCategory,
-    get_default_metrics,
-    parse_metrics_from_goal,
-)
+from .evaluator import evaluate, get_attempt_history
+from .logger import SessionLogger, archive_session, format_duration, format_tokens, log_tool_call, stream_query
 from .notification import (
     notify_checkpoint,
     notify_complete,
@@ -39,10 +36,15 @@ from .pool import (
     Checkpoint,
     add_checkpoint,
     append_failure_assumptions,
+    append_to_findings,
     append_to_progress_log,
+    clear_handoff_note,
+    clear_pivot_recommendation,
+    compact_pool,
     create_checkpoint,
     ensure_task_files_exist,
     generate_feedback_template,
+    generate_handoff_note,
     get_pending_checkpoints,
     goal_exists,
     init_ralph_dir,
@@ -50,9 +52,11 @@ from .pool import (
     mark_pending_test,
     parse_feedback,
     pool_exists,
+    pool_needs_compaction,
     read_checkpoint_manifest,
     read_eval_config_from_goal,
     read_goal,
+    read_handoff_note,
     read_pool,
     read_task,
     save_checkpoint_manifest,
@@ -80,7 +84,6 @@ def parse_target_score_from_goal(cwd: str = ".") -> int:
 
     Returns DEFAULT_TARGET_SCORE if not found.
     """
-    import re
     goal_content = read_goal(cwd)
     if not goal_content:
         return DEFAULT_TARGET_SCORE
@@ -289,12 +292,12 @@ async def execute_parallel_tasks(
     successful = 0
     failed = 0
 
-    for result in results:
+    for (task_id, task_type), result in zip(tasks_with_types, results):
         if isinstance(result, Exception):
             # Handle unexpected exceptions from gather
             processed_results.append(ParallelTaskResult(
-                task_id="unknown",
-                task_type="unknown",
+                task_id=task_id,
+                task_type=task_type,
                 success=False,
                 error=str(result),
             ))
@@ -316,7 +319,7 @@ async def execute_parallel_tasks(
     )
 
 
-async def initialize_pool(cwd: str = ".") -> None:
+async def initialize_pool(cwd: str = ".", verbose: bool = False) -> None:
     """
     Initialize the task pool from goal.md.
 
@@ -328,6 +331,8 @@ async def initialize_pool(cwd: str = ".") -> None:
 
     console.print("\n[yellow]Initializing task pool...[/yellow]\n")
 
+    ralph_dir = str(Path(cwd).resolve() / ".ralph")
+
     prompt = f"""Goal:
 ---
 {goal}
@@ -337,31 +342,94 @@ Analyze this goal and create the initial Task Pool.
 
 1. First, explore the codebase to understand the current state.
 2. Then create appropriate tasks (start with EXPLORE if uncertain).
-3. Write the task table to .ralph/pool.md
-4. Create detailed task files in .ralph/tasks/
+3. Write the task table to {ralph_dir}/pool.md
+4. Create detailed task files in {ralph_dir}/tasks/
+
+IMPORTANT: All .ralph/ files MUST be written under {ralph_dir}/. Do NOT create .ralph/ directories elsewhere.
 
 Remember: keep initial tasks coarse-grained. It's OK to have only 2-3 tasks.
 """
 
-    async for message in query(
+    sr = await stream_query(
         prompt=prompt,
-        options=ClaudeCodeOptions(
+        options=ClaudeAgentOptions(
             system_prompt=INITIALIZER_SYSTEM_PROMPT,
             allowed_tools=[
                 "Read", "Write", "Glob", "Grep", "LSP",
-                "WebFetch", "WebSearch",  # Research for better task planning
+                "WebFetch", "WebSearch",
             ],
             permission_mode="acceptEdits",
             max_turns=20,
             cwd=cwd,
         ),
-    ):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    console.print(block.text)
+        agent_name="initializer",
+        emoji="🏗️",
+        cwd=cwd,
+        verbose=verbose,
+        show_tools=True,
+    )
 
     console.print("\n[green]✓ Task pool initialized[/green]")
+    return sr.result_stats
+
+
+def _print_session_summary(logger: SessionLogger, iterations: int) -> None:
+    """Print session summary with accumulated stats."""
+    elapsed = (datetime.now() - logger._start_time).total_seconds()
+    total_tokens = logger.metrics.total_input_tokens + logger.metrics.total_output_tokens
+
+    parts = [format_duration(elapsed)]
+    if total_tokens > 0:
+        parts.append(format_tokens({
+            "input_tokens": logger.metrics.total_input_tokens,
+            "output_tokens": logger.metrics.total_output_tokens,
+        }))
+    parts.append(f"{iterations} iterations")
+    if logger.metrics.total_cost_usd > 0:
+        parts.append(f"${logger.metrics.total_cost_usd:.2f}")
+
+    console.print(f"\n[dim]Session complete: {' · '.join(parts)}[/dim]")
+
+
+def _ensure_new_tasks(
+    decision: "PlannerDecision",
+    logger: "SessionLogger",
+    cwd: str,
+    task_type: str = "EXPLORE",
+    reason: str = "",
+) -> None:
+    """Create task files for new tasks from a planner decision."""
+    if decision.new_tasks:
+        created = ensure_task_files_exist(cwd)
+        if created:
+            console.print(f"[dim]创建了任务: {', '.join(created)}[/dim]")
+            for task_id in created:
+                logger.log_task_created(task_id, task_type, reason)
+
+
+def _handle_pivot_tail(
+    decision: "PlannerDecision",
+    logger: "SessionLogger",
+    iteration: int,
+    progress_msg: str,
+    cwd: str,
+) -> None:
+    """Shared tail logic for all pivot actions: log progress, clear marker, log iteration."""
+    append_to_progress_log(progress_msg, cwd)
+    clear_pivot_recommendation(decision.target, cwd)
+    logger.log_iteration_end(iteration, decision.action.value)
+
+
+def _clean_ralph_dir(cwd: str = ".") -> None:
+    """Clean .ralph/ directory contents, preserving history/."""
+    ralph_dir = Path(cwd) / ".ralph"
+    if ralph_dir.exists():
+        for item in ralph_dir.iterdir():
+            if item.name != "history":
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
 
 
 async def run(
@@ -399,6 +467,34 @@ async def run(
     """
     init_ralph_dir(cwd)
 
+    # Detect session conflict: new goal vs existing session
+    if goal and goal_exists(cwd):
+        existing_goal = read_goal(cwd)
+        new_first = goal.strip().split('\n')[0].strip().lower()
+        existing_first = existing_goal.strip().split('\n')[0].strip().lower()
+
+        if new_first != existing_first:
+            console.print(f"[yellow]⚠ 检测到已有 session（目标: {existing_first[:60]}）[/yellow]")
+            console.print(f"[yellow]  新目标: {new_first[:60]}[/yellow]\n")
+
+            choice = Prompt.ask(
+                "如何处理？",
+                choices=["archive", "resume", "abort"],
+                default="archive",
+            )
+
+            if choice == "archive":
+                archive_path = archive_session(cwd, keep_current=False)
+                if archive_path:
+                    console.print(f"[green]✓ 旧 session 已归档到 {archive_path}[/green]")
+                _clean_ralph_dir(cwd)
+                init_ralph_dir(cwd)
+            elif choice == "resume":
+                console.print("[dim]忽略新目标，继续旧 session[/dim]")
+            else:  # abort
+                console.print("[yellow]已取消[/yellow]")
+                return False
+
     # Initialize session logger
     logger = SessionLogger(cwd)
     logger.log_session_start(goal)
@@ -409,18 +505,26 @@ async def run(
         if skip_clarify:
             await quick_clarify(goal, cwd)
         elif clarify_mode == "explore":
-            await clarify_requirements_v2(goal, cwd, mode="explore")
+            await clarify_requirements_v2(goal, cwd, mode="explore", verbose=verbose)
         elif clarify_mode == "ask":
-            await clarify_requirements(goal, cwd)
+            await clarify_requirements(goal, cwd, verbose=verbose)
         else:  # auto mode
-            await clarify_requirements_v2(goal, cwd, mode="auto")
+            await clarify_requirements_v2(goal, cwd, mode="auto", verbose=verbose)
     else:
         console.print("\n[dim]Goal already exists, skipping clarification[/dim]")
 
     # Phase 2: Initialize pool
     if not pool_exists(cwd):
         console.print("\n[bold]Phase 2: Initializing task pool[/bold]\n")
-        await initialize_pool(cwd)
+        init_stats = await initialize_pool(cwd, verbose=verbose)
+        if init_stats:
+            logger.log_query_stats(init_stats)
+        if not pool_exists(cwd):
+            raise RuntimeError(
+                f"Initializer completed but pool.md was not created at "
+                f"{Path(cwd).resolve() / '.ralph' / 'pool.md'}. "
+                f"Check tool_calls.jsonl for Write tool paths."
+            )
     else:
         console.print("\n[dim]Pool already exists, skipping initialization[/dim]")
 
@@ -437,13 +541,46 @@ async def run(
     # Phase 3: Iteration loop
     console.print("\n[bold]Phase 3: Executing tasks[/bold]\n")
 
+    consecutive_skips = 0
+    review_failure_count: dict[str, int] = {}  # task_id → consecutive review failures
+    MAX_REVIEW_RETRIES = 3
+
     for i in range(1, max_iterations + 1):
-        console.print(f"\n[bold cyan]═══ Iteration {i}/{max_iterations} ═══[/bold cyan]\n")
+        # Build cumulative stats for iteration header
+        elapsed = (datetime.now() - logger._start_time).total_seconds()
+        total_tokens = logger.metrics.total_input_tokens + logger.metrics.total_output_tokens
+        iter_stats_parts = []
+        if elapsed > 60:
+            iter_stats_parts.append(format_duration(elapsed))
+        if total_tokens > 0:
+            iter_stats_parts.append(format_tokens({
+                "input_tokens": logger.metrics.total_input_tokens,
+                "output_tokens": logger.metrics.total_output_tokens,
+            }))
+        if logger.metrics.total_cost_usd > 0:
+            iter_stats_parts.append(f"${logger.metrics.total_cost_usd:.2f}")
+        iter_suffix = f" ({' · '.join(iter_stats_parts)})" if iter_stats_parts else ""
+        console.print(f"\n[bold cyan]═══ Iteration {i}/{max_iterations}{iter_suffix} ═══[/bold cyan]\n")
         logger.log_iteration_start(i, max_iterations)
+
+        # Context compaction: compress pool.md if it's grown too large
+        if pool_needs_compaction(cwd):
+            console.print("[dim]📦 Pool.md exceeds threshold, compacting...[/dim]")
+            try:
+                compacted = await compact_pool(cwd)
+                if compacted:
+                    console.print("[dim]📦 Pool.md compacted successfully[/dim]")
+                    append_to_progress_log("COMPACTION - pool.md compressed to reduce context noise", cwd)
+            except Exception as e:
+                console.print(f"[dim]📦 Compaction failed (non-critical): {e}[/dim]")
 
         # Planner decides next action
         console.print("[yellow]Planner deciding...[/yellow]")
         decision = await plan(cwd, verbose=verbose, explore_mode=explore_mode)
+
+        # Log planner stats
+        if decision.result_stats:
+            logger.log_query_stats(decision.result_stats)
 
         console.print(f"[bold]Action:[/bold] {decision.action.value}")
         if decision.target:
@@ -458,6 +595,10 @@ async def run(
             target=decision.target,
             reason=decision.reason,
         )
+
+        # Reset consecutive skip counter for non-SKIP actions
+        if decision.action != Action.SKIP:
+            consecutive_skips = 0
 
         # Handle DONE
         if decision.action == Action.DONE:
@@ -482,7 +623,9 @@ async def run(
                     continue
 
             console.print("\n[bold green]✓ Goal completed![/bold green]")
+            _print_session_summary(logger, i)
             append_to_progress_log(f"DONE - Goal completed after {i} iterations", cwd)
+            generate_handoff_note(cwd)  # Save state for potential future resume
             logger.log_session_end(success=True, reason=f"Completed after {i} iterations")
             return True
 
@@ -512,6 +655,10 @@ async def run(
 
             console.print(f"\n[yellow]Exploring {decision.target}...[/yellow]\n")
             result = await work(decision.target, "EXPLORE", cwd, verbose=verbose)
+
+            # Log worker stats
+            if result.result_stats:
+                logger.log_query_stats(result.result_stats)
 
             # Log worker result
             logger.log_worker_complete(
@@ -621,6 +768,10 @@ async def run(
             console.print(f"\n[yellow]Executing {decision.target}...[/yellow]\n")
             result = await work(decision.target, "IMPLEMENT", cwd, verbose=verbose)
 
+            # Log worker stats
+            if result.result_stats:
+                logger.log_query_stats(result.result_stats)
+
             # Log worker result
             logger.log_worker_complete(
                 task_id=decision.target,
@@ -643,6 +794,22 @@ async def run(
                         reason=f"Review failed with error: {e}",
                     )
 
+                # Track consecutive review failures per task (I/O layer protection)
+                if review_result.verdict in (Verdict.RETRY, Verdict.FAILED):
+                    review_failure_count[decision.target] = review_failure_count.get(decision.target, 0) + 1
+                    if review_failure_count[decision.target] >= MAX_REVIEW_RETRIES:
+                        console.print(f"[red]✗ Task {decision.target} failed {MAX_REVIEW_RETRIES} consecutive reviews, degrading to FAILED[/red]")
+                        review_result = ReviewResult(
+                            verdict=Verdict.FAILED,
+                            reason=f"Degraded to FAILED after {MAX_REVIEW_RETRIES} consecutive review failures. Last: {review_result.reason}",
+                        )
+                else:
+                    review_failure_count.pop(decision.target, None)
+
+                # Log reviewer stats
+                if review_result.result_stats:
+                    logger.log_query_stats(review_result.result_stats)
+
                 console.print(f"[bold]Review verdict:[/bold] {review_result.verdict.value}")
                 console.print(f"[dim]{review_result.reason}[/dim]")
 
@@ -654,38 +821,25 @@ async def run(
                 )
 
                 if review_result.verdict == Verdict.PASSED:
-                    from .evaluator import AutomationLevel as EvalAutomationLevel
-                    from .evaluator import Metric
-                    from .evaluator import MetricType as EvalMetricType
-
                     # Run quality evaluation
+                    # Evaluator reads goal.md directly and extracts metrics from
+                    # the Success Metrics section via prompt (no code parsing needed)
                     console.print(f"\n[yellow]Evaluating quality...[/yellow]")
 
-                    # Get metrics from goal.md or use defaults
-                    goal_content = read_goal(cwd)
-                    metrics_config = parse_metrics_from_goal(goal_content)
-                    if not metrics_config:
-                        metrics_config = get_default_metrics(TaskCategory.GENERAL)
-
-                    # Convert MetricDefinition to evaluator Metric format
-                    eval_metrics = [
-                        Metric(
-                            name=m.name,
-                            type=EvalMetricType(m.type.value),
-                            description=m.description,
-                            target=m.target,
-                            automation=EvalAutomationLevel(m.automation.value),
-                            proxy_metric=m.proxy_metric,
-                        )
-                        for m in metrics_config.all_metrics()
-                    ]
+                    # Get attempt history for pivot detection
+                    attempt_number, previous_scores = get_attempt_history(decision.target, cwd)
 
                     eval_result = await evaluate(
                         decision.target,
                         cwd=cwd,
-                        metrics=eval_metrics if eval_metrics else None,
                         verbose=verbose,
+                        previous_scores=previous_scores,
+                        attempt_number=attempt_number,
                     )
+
+                    # Log evaluator stats
+                    if eval_result.result_stats:
+                        logger.log_query_stats(eval_result.result_stats)
 
                     # Log evaluation
                     logger.log_evaluation(
@@ -697,7 +851,6 @@ async def run(
 
                     # P0: If Evaluator suggests pivot, write to pool.md for Planner to see
                     if eval_result.should_pivot:
-                        from .pool import append_to_findings
                         append_to_findings(
                             f"**[PIVOT_RECOMMENDED]** {decision.target}: {eval_result.pivot_reason}",
                             cwd
@@ -785,6 +938,7 @@ async def run(
                                 instructions=instructions,
                                 cwd=cwd,
                             )
+                            generate_handoff_note(cwd)  # Save state for resume
                             logger.log_session_end(success=False, reason=f"Waiting for batch testing ({len(pending)} checkpoints)")
                             return False
 
@@ -798,25 +952,13 @@ async def run(
                         # Task passed functionally but quality needs improvement
                         console.print(f"[yellow]⚠ Task {decision.target} needs improvement (score: {eval_result.overall_score:.0f}/{target_score})[/yellow]")
 
-                        # Record issues and suggestions in task file for Planner to see
-                        task_content = read_task(decision.target, cwd)
-                        if task_content:
-                            now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                            eval_note = f"\n\n## Quality Evaluation ({now})\n"
-                            eval_note += f"**Score**: {eval_result.overall_score:.0f}/100 (target: {target_score})\n"
-                            eval_note += f"**Status**: {'PASSED' if eval_result.overall_score >= target_score else 'NEEDS IMPROVEMENT'}\n"
-                            if eval_result.issues:
-                                eval_note += "\n**Issues**:\n"
-                                for issue in eval_result.issues:
-                                    eval_note += f"- {issue}\n"
-                            if eval_result.suggestions:
-                                eval_note += "\n**Suggestions**:\n"
-                                for suggestion in eval_result.suggestions:
-                                    eval_note += f"- {suggestion}\n"
-                            write_task(decision.target, task_content + eval_note, cwd)
+                        # Evaluator already wrote full evaluation to task file
 
                         append_to_progress_log(
-                            f"EXECUTE {decision.target} - NEEDS IMPROVEMENT (score: {eval_result.overall_score:.0f}/{target_score})",
+                            f"EXECUTE {decision.target} - NEEDS IMPROVEMENT "
+                            f"(score: {eval_result.overall_score:.0f}/{target_score}, "
+                            f"metrics_found: {len(eval_result.metrics)}, "
+                            f"details in tasks/{decision.target}.md)",
                             cwd
                         )
                 elif review_result.verdict == Verdict.RETRY:
@@ -895,14 +1037,28 @@ async def run(
 
         # Handle SKIP
         if decision.action == Action.SKIP:
-            console.print(f"\n[yellow]⏭ Skipping {decision.target or 'current task'}[/yellow]")
+            consecutive_skips += 1
+            console.print(f"\n[yellow]⏭ Skipping {decision.target or 'current task'} (consecutive: {consecutive_skips}/3)[/yellow]")
             console.print(f"[dim]Reason: {decision.reason}[/dim]")
 
             logger.log_task_skipped(decision.target, decision.reason)
             append_to_progress_log(
-                f"SKIP {decision.target or 'task'} - {decision.reason}",
+                f"SKIP {decision.target or 'task'} - {decision.reason} (consecutive: {consecutive_skips})",
                 cwd
             )
+
+            if consecutive_skips >= 3:
+                console.print("\n[bold yellow]⚠ 3 consecutive skips detected — auto-completing to avoid loop[/bold yellow]")
+                append_to_progress_log(
+                    f"AUTO_DONE - Exiting after {consecutive_skips} consecutive skips",
+                    cwd
+                )
+                logger.log_iteration_end(i, "AUTO_DONE")
+                _print_session_summary(logger, i)
+                generate_handoff_note(cwd)  # Save state for resume
+                logger.log_session_end(success=False, reason=f"Auto-done after {consecutive_skips} consecutive skips")
+                return False
+
             logger.log_iteration_end(i, decision.action.value)
             continue
 
@@ -921,15 +1077,9 @@ async def run(
                 cwd
             )
 
-            # Append Q&A to pool.md Findings section for future reference
-            pool_content = read_pool(cwd)
-            if "## Findings" in pool_content:
-                qa_note = f"\n\n**User Decision**: {decision.question}\n**Answer**: {user_answer}\n"
-                pool_content = pool_content.replace(
-                    "## Findings",
-                    f"## Findings{qa_note}"
-                )
-                write_pool(pool_content, cwd)
+            # Append Q&A to pool.md Findings section (atomic, lock-protected)
+            qa_note = f"**User Decision**: {decision.question} → {user_answer}"
+            append_to_findings(qa_note, cwd)
 
             console.print(f"[green]✓ Answer recorded[/green]")
             logger.log_iteration_end(i, decision.action.value)
@@ -940,7 +1090,6 @@ async def run(
             console.print(f"\n[yellow]🛡️ HEDGE: 为 {decision.target} 探索替代方案[/yellow]")
             console.print(f"[dim]Reason: {decision.reason}[/dim]")
 
-            # Send notification (non-blocking)
             notify_pivot(
                 task_id=decision.target,
                 reason=decision.reason,
@@ -949,33 +1098,16 @@ async def run(
                 trigger="wait",
             )
 
-            # Record failure assumptions in pool.md
             if decision.failure_assumptions:
-                append_failure_assumptions(
-                    decision.target,
-                    decision.failure_assumptions,
-                    cwd
-                )
+                append_failure_assumptions(decision.target, decision.failure_assumptions, cwd)
                 console.print(f"[dim]记录了失败假设到 pool.md[/dim]")
 
-            # Ensure task files exist for new exploration tasks
-            if decision.new_tasks:
-                created = ensure_task_files_exist(cwd)
-                if created:
-                    console.print(f"[dim]创建了探索任务: {', '.join(created)}[/dim]")
-                    for task_id in created:
-                        logger.log_task_created(task_id, "EXPLORE", "Hedge alternative")
-
-            append_to_progress_log(
+            _ensure_new_tasks(decision, logger, cwd, "EXPLORE", "Hedge alternative")
+            _handle_pivot_tail(
+                decision, logger, i,
                 f"HEDGE {decision.target} - 探索替代方案: {decision.reason[:100]}",
-                cwd
+                cwd,
             )
-
-            # Clear the PIVOT_RECOMMENDED marker for this task
-            from .pool import clear_pivot_recommendation
-            clear_pivot_recommendation(decision.target, cwd)
-
-            logger.log_iteration_end(i, decision.action.value)
             continue
 
         # Handle PIVOT_RESEARCH - Research confirmed direction not viable
@@ -985,7 +1117,6 @@ async def run(
             console.print(f"[dim]阻断原因: {decision.blocker}[/dim]")
             console.print(f"[dim]新方向: {decision.new_direction}[/dim]")
 
-            # Send notification (non-blocking)
             notify_pivot(
                 task_id=decision.target,
                 reason=decision.blocker,
@@ -993,32 +1124,18 @@ async def run(
                 to_approach=decision.new_direction,
                 trigger="research",
             )
-
-            # Log the pivot decision
             notify_decision(
                 decision=f"放弃 {decision.current_approach}，转向 {decision.new_direction}",
                 reason=decision.blocker,
                 task_id=decision.target,
             )
 
-            # Create new tasks for the new direction
-            if decision.new_tasks:
-                created = ensure_task_files_exist(cwd)
-                if created:
-                    console.print(f"[dim]创建了新方向任务: {', '.join(created)}[/dim]")
-                    for task_id in created:
-                        logger.log_task_created(task_id, "EXPLORE", "Pivot to new direction")
-
-            append_to_progress_log(
+            _ensure_new_tasks(decision, logger, cwd, "EXPLORE", "Pivot to new direction")
+            _handle_pivot_tail(
+                decision, logger, i,
                 f"PIVOT_RESEARCH {decision.target} - 放弃 [{decision.current_approach}] 因为 [{decision.blocker}]，转向 [{decision.new_direction}]",
-                cwd
+                cwd,
             )
-
-            # Clear the PIVOT_RECOMMENDED marker for this task
-            from .pool import clear_pivot_recommendation
-            clear_pivot_recommendation(decision.target, cwd)
-
-            logger.log_iteration_end(i, decision.action.value)
             continue
 
         # Handle PIVOT_ITERATION - Multiple attempts failed
@@ -1029,7 +1146,6 @@ async def run(
             console.print(f"[dim]失败模式: {decision.failure_pattern}[/dim]")
             console.print(f"[dim]新方案: {decision.new_approach}[/dim]")
 
-            # Send notification (non-blocking)
             notify_pivot(
                 task_id=decision.target,
                 reason=f"尝试 {decision.attempt_count} 次，最高分 {decision.best_score}，{decision.failure_pattern}",
@@ -1037,35 +1153,23 @@ async def run(
                 to_approach=decision.new_approach,
                 trigger="iteration",
             )
-
-            # Log the pivot decision
             notify_decision(
                 decision=f"停止优化现有实现，采用新方案: {decision.new_approach}",
                 reason=decision.failure_pattern,
                 task_id=decision.target,
             )
 
-            # Create new tasks for the new approach
-            if decision.new_tasks:
-                created = ensure_task_files_exist(cwd)
-                if created:
-                    console.print(f"[dim]创建了新方案任务: {', '.join(created)}[/dim]")
-                    for task_id in created:
-                        logger.log_task_created(task_id, "IMPLEMENT", "Pivot to new approach")
-
-            append_to_progress_log(
+            _ensure_new_tasks(decision, logger, cwd, "IMPLEMENT", "Pivot to new approach")
+            _handle_pivot_tail(
+                decision, logger, i,
                 f"PIVOT_ITERATION {decision.target} - 尝试 {decision.attempt_count} 次，最高分 {decision.best_score}，转向 [{decision.new_approach}]",
-                cwd
+                cwd,
             )
-
-            # Clear the PIVOT_RECOMMENDED marker for this task
-            from .pool import clear_pivot_recommendation
-            clear_pivot_recommendation(decision.target, cwd)
-
-            logger.log_iteration_end(i, decision.action.value)
             continue
 
     console.print(f"\n[yellow]Reached max iterations ({max_iterations})[/yellow]")
+    _print_session_summary(logger, max_iterations)
+    generate_handoff_note(cwd)  # Save state for resume
     logger.log_session_end(success=False, reason=f"Reached max iterations ({max_iterations})")
     return False
 
@@ -1101,6 +1205,14 @@ async def resume(
         raise ValueError("No existing session found (pool.md missing)")
 
     console.print("\n[bold]Resuming existing session[/bold]\n")
+
+    # Read and display handoff note if available
+    handoff = read_handoff_note(cwd)
+    if handoff:
+        console.print("[dim]📋 Found handoff note from previous session[/dim]")
+        # Inject handoff into pool.md Findings so Planner sees it
+        append_to_findings(f"**[HANDOFF]** Resume context from previous session available in .ralph/handoff.md", cwd)
+        # Don't clear yet - let planner read it via build_planner_prompt
 
     # Check if we were waiting for user feedback
     if is_waiting_for_user(cwd):
