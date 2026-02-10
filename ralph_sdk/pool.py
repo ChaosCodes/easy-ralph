@@ -30,6 +30,7 @@ RALPH_DIR = ".ralph"
 GOAL_FILE = f"{RALPH_DIR}/goal.md"
 POOL_FILE = f"{RALPH_DIR}/pool.md"
 TASKS_DIR = f"{RALPH_DIR}/tasks"
+AUDITS_DIR = f"{RALPH_DIR}/audits"
 FEEDBACK_FILE = f"{RALPH_DIR}/feedback.md"
 CHECKPOINTS_DIR = f"{RALPH_DIR}/checkpoints"
 MANIFEST_FILE = f"{CHECKPOINTS_DIR}/manifest.json"
@@ -225,8 +226,10 @@ def _atomic_write(path: Path, content: str) -> None:
 def init_ralph_dir(cwd: str = ".") -> None:
     """Create .ralph/ directory structure."""
     base = Path(cwd)
+    base.mkdir(parents=True, exist_ok=True)
     (base / RALPH_DIR).mkdir(exist_ok=True)
     (base / TASKS_DIR).mkdir(exist_ok=True)
+    (base / AUDITS_DIR).mkdir(exist_ok=True)
 
 
 def ralph_exists(cwd: str = ".") -> bool:
@@ -1310,6 +1313,84 @@ def has_pivot_recommendation(cwd: str = ".") -> bool:
 
 
 # -----------------------------------------------------------------------------
+# Pool Status Updates
+# -----------------------------------------------------------------------------
+
+
+def update_pool_status(new_status: str, cwd: str = ".") -> None:
+    """
+    Update or insert a ## Status line in pool.md.
+
+    Handles both formats:
+    - "## Status: VALUE" (colon on same line)
+    - "## Status\\nVALUE" (value on next line)
+
+    If no Status section exists, appends one after the header.
+    """
+    base = Path(cwd)
+    lock_path = base / POOL_LOCK_FILE
+
+    with file_lock(lock_path):
+        pool_content = _read_pool_unlocked(cwd)
+        if not pool_content:
+            return
+
+        # Try to replace existing status (colon format or newline format)
+        updated, count = re.subn(
+            r"## Status[:\s]+\S+",
+            f"## Status: {new_status}",
+            pool_content,
+            count=1,
+        )
+        if count > 0:
+            _atomic_write(base / POOL_FILE, updated)
+        else:
+            # No Status section found — append after first line
+            lines = pool_content.split("\n", 1)
+            if len(lines) > 1:
+                new_content = lines[0] + f"\n\n## Status: {new_status}\n" + lines[1]
+            else:
+                new_content = pool_content + f"\n\n## Status: {new_status}\n"
+            _atomic_write(base / POOL_FILE, new_content)
+
+
+def mark_pending_tasks_skipped(reason: str, cwd: str = ".") -> list[str]:
+    """
+    Mark all pending tasks as skipped/superseded in their task files.
+
+    Called when the planner chooses DONE with remaining pending tasks.
+
+    Returns list of task IDs that were marked skipped.
+    """
+    task_ids = extract_task_ids_from_pool(cwd)
+    skipped = []
+
+    for tid in task_ids:
+        task_content = read_task(tid, cwd)
+        if not task_content:
+            continue
+
+        content_lower = task_content.lower()
+        # Skip optional emoji prefix (e.g. "## Status: ✅ completed")
+        status_match = re.search(r"## status[:\s]+(?:[^\w\s]\s*)?(\w+)", content_lower)
+        if status_match and status_match.group(1) == "pending":
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            skip_note = f"\n\n## Skipped ({now})\n**Reason**: {reason}\n"
+            # Update status to skipped
+            task_content = re.sub(
+                r"(## Status[:\s]+)\S+",
+                r"\1skipped",
+                task_content,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            write_task(tid, task_content + skip_note, cwd)
+            skipped.append(tid)
+
+    return skipped
+
+
+# -----------------------------------------------------------------------------
 # Context Compaction (上下文压缩)
 # -----------------------------------------------------------------------------
 
@@ -1486,16 +1567,23 @@ def generate_handoff_note(cwd: str = ".") -> str:
             continue
 
         content_lower = task_content.lower()
-        if "## status\ncompleted" in content_lower or "## status\npassed" in content_lower:
-            completed.append(tid)
-        elif "## status\npending" in content_lower:
-            pending.append(tid)
+        # Match both "## Status\nvalue" and "## Status: value" formats
+        # Skip optional emoji prefix (e.g. "## Status: ✅ completed")
+        status_match = re.search(r"## status[:\s]+(?:[^\w\s]\s*)?(\w+)", content_lower)
+        if status_match:
+            status_val = status_match.group(1)
+            if status_val in ("completed", "passed", "done"):
+                completed.append(tid)
+            elif status_val == "pending":
+                pending.append(tid)
+            else:
+                in_progress.append(tid)
         else:
             in_progress.append(tid)
 
-    # Extract key findings from pool
+    # Extract key findings from pool (matches both "## Findings" and "## Shared Findings")
     findings_match = re.search(
-        r"## Findings\s*\n(.*?)(?=\n## |\Z)",
+        r"## (?:Shared )?Findings\s*\n(.*?)(?=\n## |\Z)",
         pool_content,
         re.DOTALL,
     )

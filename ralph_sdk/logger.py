@@ -15,8 +15,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, query
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, ThinkingBlock, query
+from claude_agent_sdk._internal.transport.subprocess_cli import CLIConnectionError
+from claude_agent_sdk.types import StreamEvent
 from rich.console import Console
+from rich.panel import Panel
 
 RALPH_DIR = ".ralph"
 LOGS_DIR = f"{RALPH_DIR}/logs"
@@ -196,6 +199,8 @@ class StreamResult:
     text: str
     tool_count: int
     result_stats: object | None  # ResultMessage
+    structured_output: dict | None = None
+    thinking_text: str = ""
 
 
 async def stream_query(
@@ -208,6 +213,7 @@ async def stream_query(
     verbose: bool = False,
     show_tools: bool | None = None,
     status_message: str | None = None,
+    include_partial: bool = False,
 ) -> StreamResult:
     """Run a streaming query and handle output uniformly.
 
@@ -215,6 +221,135 @@ async def stream_query(
         prompt: The prompt to send.
         options: ClaudeAgentOptions for the query.
         agent_name: Agent name for log_tool_call (e.g. "worker").
+        emoji: Emoji prefix for thinking lines.
+        cwd: Working directory.
+        verbose: If True, print first line of thinking text.
+        show_tools: If True, always show tool lines. If None, follows verbose.
+        status_message: If provided, printed as dim text before starting.
+        include_partial: If True, enable partial message streaming and display
+            real-time text tokens when verbose is also True.
+
+    Returns:
+        StreamResult with accumulated text, tool count, and result stats.
+    """
+    if status_message:
+        _console.print(f"[dim]{status_message}[/dim]")
+
+    if include_partial:
+        options.include_partial_messages = True
+
+    _should_show = show_tools if show_tools is not None else True
+
+    result_text = ""
+    thinking_text = ""
+    tool_count = 0
+    result_stats = None
+    structured_output = None
+
+    try:
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, StreamEvent):
+                # Real-time display of partial content
+                if verbose and include_partial:
+                    event = message.event
+                    if event.get("type") == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            _console.print(delta["text"], end="")
+                        elif delta.get("type") == "thinking_delta":
+                            _console.print(f"[dim magenta]{delta['thinking']}[/dim magenta]", end="")
+            elif isinstance(message, AssistantMessage):
+                text_blocks = []
+                thinking_blocks = []
+                tool_blocks = []
+                for block in message.content:
+                    if isinstance(block, ThinkingBlock):
+                        thinking_blocks.append(block.thinking)
+                    elif hasattr(block, "text") and block.text:
+                        result_text += block.text
+                        text_blocks.append(block.text)
+                    if hasattr(block, "name") and hasattr(block, "input"):
+                        tool_blocks.append(block)
+
+                # Accumulate thinking text
+                if thinking_blocks:
+                    thinking_text += "\n".join(thinking_blocks)
+
+                # Print thinking blocks (verbose only)
+                if verbose and thinking_blocks:
+                    for t in thinking_blocks:
+                        _console.print(Panel(
+                            f"[dim magenta]{t}[/dim magenta]",
+                            title=f"[dim magenta]{emoji} Thinking[/dim magenta]",
+                            border_style="dim magenta",
+                            expand=False,
+                        ))
+
+                # Print assistant text (full, dimmed)
+                if verbose and not include_partial and text_blocks:
+                    full_text = "\n".join(t.strip() for t in text_blocks if t.strip())
+                    if full_text:
+                        _console.print(f"     [italic dim]{emoji} {full_text}[/italic dim]")
+
+                # Print tool calls with parallel grouping
+                for i, block in enumerate(tool_blocks):
+                    tool_count += 1
+                    log_tool_call(cwd, agent_name, block.name, block.input)
+                    if _should_show:
+                        tool_line = format_tool_line(block.name, block.input, cwd)
+                        if tool_line:
+                            if len(tool_blocks) > 1:
+                                if i == 0:
+                                    prefix = "[dim]┌[/dim]"
+                                elif i == len(tool_blocks) - 1:
+                                    prefix = "[dim]└[/dim]"
+                                else:
+                                    prefix = "[dim]│[/dim]"
+                                _console.print(f"  {prefix} [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
+                            else:
+                                _console.print(f"    [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
+            elif isinstance(message, ResultMessage):
+                result_stats = message
+                if hasattr(message, 'structured_output') and message.structured_output:
+                    structured_output = message.structured_output
+    except (BaseExceptionGroup, ExceptionGroup) as eg:
+        # SDK cleanup race: MCP handler writes to closed transport
+        cli_errors, rest = eg.split(CLIConnectionError)
+        if rest:
+            raise rest  # Re-raise non-CLI errors
+        # CLI connection errors during cleanup — check if we have results
+        if result_stats:
+            _console.print(f"[dim]⚠ Benign MCP cleanup error (results already collected)[/dim]")
+        else:
+            raise RuntimeError(
+                f"Claude CLI process exited during MCP initialization. "
+                f"This is usually transient — retry may succeed. "
+                f"Details: {cli_errors}"
+            ) from cli_errors
+
+    return StreamResult(text=result_text, tool_count=tool_count, result_stats=result_stats, structured_output=structured_output, thinking_text=thinking_text)
+
+
+async def stream_client_query(
+    client: ClaudeSDKClient,
+    prompt: str,
+    *,
+    agent_name: str,
+    emoji: str = "💭",
+    cwd: str = ".",
+    verbose: bool = False,
+    show_tools: bool | None = None,
+    status_message: str | None = None,
+) -> StreamResult:
+    """Send a query to an existing ClaudeSDKClient and collect response.
+
+    Same iteration logic as stream_query(), but works with an open client
+    for multi-turn conversations.
+
+    Args:
+        client: An active ClaudeSDKClient instance.
+        prompt: The prompt to send.
+        agent_name: Agent name for log_tool_call.
         emoji: Emoji prefix for thinking lines.
         cwd: Working directory.
         verbose: If True, print first line of thinking text.
@@ -230,31 +365,69 @@ async def stream_query(
     _should_show = show_tools if show_tools is not None else True
 
     result_text = ""
+    thinking_text = ""
     tool_count = 0
     result_stats = None
+    structured_output = None
 
-    async for message in query(prompt=prompt, options=options):
+    await client.query(prompt)
+    async for message in client.receive_response():
         if isinstance(message, AssistantMessage):
+            text_blocks = []
+            thinking_blocks = []
+            tool_blocks = []
             for block in message.content:
-                if hasattr(block, "text") and block.text:
+                if isinstance(block, ThinkingBlock):
+                    thinking_blocks.append(block.thinking)
+                elif hasattr(block, "text") and block.text:
                     result_text += block.text
-                    if verbose:
-                        text = block.text.strip()
-                        if text and len(text) > 20:
-                            first_line = text.split('\n')[0]
-                            _console.print(f"     [italic bright_black]{emoji} {first_line}[/italic bright_black]")
-
+                    text_blocks.append(block.text)
                 if hasattr(block, "name") and hasattr(block, "input"):
-                    tool_count += 1
-                    log_tool_call(cwd, agent_name, block.name, block.input)
-                    if _should_show:
-                        tool_line = format_tool_line(block.name, block.input, cwd)
-                        if tool_line:
-                            _console.print(f"[bright_black][{tool_count:2d}][/bright_black] {tool_line}")
+                    tool_blocks.append(block)
+
+            # Accumulate thinking text
+            if thinking_blocks:
+                thinking_text += "\n".join(thinking_blocks)
+
+            # Print thinking blocks (verbose only)
+            if verbose and thinking_blocks:
+                for t in thinking_blocks:
+                    _console.print(Panel(
+                        f"[dim magenta]{t}[/dim magenta]",
+                        title=f"[dim magenta]{emoji} Thinking[/dim magenta]",
+                        border_style="dim magenta",
+                        expand=False,
+                    ))
+
+            # Print assistant text (full, dimmed)
+            if verbose and text_blocks:
+                full_text = "\n".join(t.strip() for t in text_blocks if t.strip())
+                if full_text:
+                    _console.print(f"     [italic dim]{emoji} {full_text}[/italic dim]")
+
+            # Print tool calls with parallel grouping
+            for i, block in enumerate(tool_blocks):
+                tool_count += 1
+                log_tool_call(cwd, agent_name, block.name, block.input)
+                if _should_show:
+                    tool_line = format_tool_line(block.name, block.input, cwd)
+                    if tool_line:
+                        if len(tool_blocks) > 1:
+                            if i == 0:
+                                prefix = "[dim]┌[/dim]"
+                            elif i == len(tool_blocks) - 1:
+                                prefix = "[dim]└[/dim]"
+                            else:
+                                prefix = "[dim]│[/dim]"
+                            _console.print(f"  {prefix} [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
+                        else:
+                            _console.print(f"    [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
         elif isinstance(message, ResultMessage):
             result_stats = message
+            if hasattr(message, 'structured_output') and message.structured_output:
+                structured_output = message.structured_output
 
-    return StreamResult(text=result_text, tool_count=tool_count, result_stats=result_stats)
+    return StreamResult(text=result_text, tool_count=tool_count, result_stats=result_stats, structured_output=structured_output, thinking_text=thinking_text)
 
 
 @dataclass
@@ -315,7 +488,13 @@ class SessionLogger:
         if result_message is None:
             return
         if result_message.usage:
-            self.metrics.total_input_tokens += result_message.usage.get("input_tokens", 0) or 0
+            # input_tokens only counts non-cached tokens; add cache tokens for total
+            input_tokens = (
+                (result_message.usage.get("input_tokens", 0) or 0)
+                + (result_message.usage.get("cache_creation_input_tokens", 0) or 0)
+                + (result_message.usage.get("cache_read_input_tokens", 0) or 0)
+            )
+            self.metrics.total_input_tokens += input_tokens
             self.metrics.total_output_tokens += result_message.usage.get("output_tokens", 0) or 0
         if result_message.total_cost_usd:
             self.metrics.total_cost_usd += result_message.total_cost_usd
@@ -340,14 +519,17 @@ class SessionLogger:
             "max_iterations": max_iterations,
         })
 
-    def log_iteration_end(self, iteration: int, action: str, success: bool = True) -> None:
+    def log_iteration_end(self, iteration: int, action: str, success: bool = True, reason: str | None = None) -> None:
         """Log iteration end."""
-        self._write_event({
+        event = {
             "event": "iteration_end",
             "iteration": iteration,
             "action": action,
             "success": success,
-        })
+        }
+        if reason:
+            event["reason"] = reason
+        self._write_event(event)
 
     def log_planner_decision(
         self,

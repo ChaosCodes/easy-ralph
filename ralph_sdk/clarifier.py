@@ -12,7 +12,7 @@ in piped stdin/stdout mode). Instead we use a two-phase approach.
 
 import json
 import re
-from claude_agent_sdk import ClaudeAgentOptions
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from rich.console import Console
 from rich.panel import Panel
 from .interactive import ask_user_interactive, CYAN, BOLD, DIM, YELLOW, GREEN, GRAY, RESET
@@ -26,7 +26,7 @@ from .metrics import (
     TaskCategory,
     get_default_metrics,
 )
-from .logger import log_tool_call, stream_query
+from .logger import log_tool_call, stream_client_query, stream_query
 from .pool import init_ralph_dir, write_goal
 from .prompts import CLARIFIER_SYSTEM_PROMPT, CLARIFIER_V2_SYSTEM_PROMPT, CLARIFIER_V2_EXPLORE_PROMPT
 
@@ -176,8 +176,16 @@ async def clarify_metrics(goal_description: str, cwd: str = ".", verbose: bool =
     """
     console.print(f"\n[bold cyan]Success Metrics Configuration[/bold cyan]\n")
 
-    # Phase 1: Agent generates questions
-    questions_prompt = f"""帮用户配置项目的成功指标。
+    # Use ClaudeSDKClient for multi-turn conversation
+    client_options = ClaudeAgentOptions(
+        system_prompt="你是一个帮助配置项目评估指标的助手。按要求输出 JSON 格式。",
+        max_turns=1,
+        cwd=cwd,
+    )
+
+    async with ClaudeSDKClient(client_options) as client:
+        # Turn 1: Agent generates questions
+        questions_prompt = f"""帮用户配置项目的成功指标。
 
 项目描述：
 {goal_description}
@@ -203,44 +211,37 @@ async def clarify_metrics(goal_description: str, cwd: str = ".", verbose: bool =
 只输出 JSON，不要有其他文字。
 """
 
-    sr = await stream_query(
-        prompt=questions_prompt,
-        options=ClaudeAgentOptions(
-            system_prompt="你是一个帮助配置项目评估指标的助手。只输出 JSON 格式的问题列表。",
-            max_turns=1,
+        sr = await stream_client_query(
+            client,
+            questions_prompt,
+            agent_name="clarifier",
+            emoji="📝",
             cwd=cwd,
-        ),
-        agent_name="clarifier",
-        emoji="📝",
-        cwd=cwd,
-        verbose=verbose,
-        status_message="Generating metrics questions...",
-    )
-    questions_text = sr.text
+            verbose=verbose,
+            status_message="Generating metrics questions...",
+        )
+        questions_text = sr.text
 
-    # Parse questions and present to user
-    questions_json = _extract_json(questions_text)
-    questions_list = questions_json.get("questions", []) if questions_json else []
+        # Parse questions and present to user
+        questions_json = _extract_json(questions_text)
+        questions_list = questions_json.get("questions", []) if questions_json else []
 
-    if not questions_list:
-        # Fallback: use hardcoded questions
-        questions_list = [
-            {"question": "项目用途是什么？", "options": ["生产部署", "研究实验", "学习探索", "原型验证"]},
-            {"question": "评估模式偏好？", "options": ["全自动(有benchmark)", "半自动(代理指标+人工确认)", "人工为主(真实环境测试)"]},
-        ]
+        if not questions_list:
+            # Fallback: use hardcoded questions
+            questions_list = [
+                {"question": "项目用途是什么？", "options": ["生产部署", "研究实验", "学习探索", "原型验证"]},
+                {"question": "评估模式偏好？", "options": ["全自动(有benchmark)", "半自动(代理指标+人工确认)", "人工为主(真实环境测试)"]},
+            ]
 
-    # Phase 2: Present questions via Rich prompts
-    answers = _ask_user_rich(questions_list)
-    answers_text = _format_answers_for_prompt(answers)
+        # Phase 2: Present questions via Rich prompts
+        answers = _ask_user_rich(questions_list)
+        answers_text = _format_answers_for_prompt(answers)
 
-    if verbose:
-        console.print(f"[dim]Collected {len(answers)} answers[/dim]")
+        if verbose:
+            console.print(f"[dim]Collected {len(answers)} answers[/dim]")
 
-    # Phase 3: Agent generates metrics based on answers
-    metrics_prompt = f"""根据以下信息生成评估指标配置。
-
-项目描述：
-{goal_description}
+        # Turn 2: Agent generates metrics based on answers (retains context from Turn 1)
+        metrics_prompt = f"""根据以下用户回答生成评估指标配置。
 
 用户回答：
 {answers_text}
@@ -273,20 +274,16 @@ async def clarify_metrics(goal_description: str, cwd: str = ".", verbose: bool =
 - 只输出 JSON，不要有其他文字
 """
 
-    sr = await stream_query(
-        prompt=metrics_prompt,
-        options=ClaudeAgentOptions(
-            system_prompt="你是一个帮助配置项目评估指标的助手。根据用户的回答生成结构化的指标配置。只输出 JSON。",
-            max_turns=1,
+        sr = await stream_client_query(
+            client,
+            metrics_prompt,
+            agent_name="clarifier",
+            emoji="📝",
             cwd=cwd,
-        ),
-        agent_name="clarifier",
-        emoji="📝",
-        cwd=cwd,
-        verbose=verbose,
-        status_message="Generating metrics config...",
-    )
-    result_text = sr.text
+            verbose=verbose,
+            status_message="Generating metrics config...",
+        )
+        result_text = sr.text
 
     # Parse JSON output
     all_answers = {"goal": goal_description}
@@ -481,8 +478,20 @@ async def clarify_requirements(initial_prompt: str, cwd: str = ".", verbose: boo
     console.print(Panel(f"[bold]Feature Request:[/bold]\n{initial_prompt}", title="Input"))
     console.print("\n[yellow]Analyzing requirements...[/yellow]\n")
 
-    # Phase 1: Agent explores codebase and generates questions
-    explore_prompt = f"""User's feature request:
+    # Use ClaudeSDKClient for multi-turn conversation
+    client_options = ClaudeAgentOptions(
+        system_prompt=CLARIFIER_SYSTEM_PROMPT,
+        allowed_tools=[
+            "Read", "Glob", "Grep", "LSP",
+            "WebFetch", "WebSearch",
+        ],
+        max_turns=15,
+        cwd=cwd,
+    )
+
+    async with ClaudeSDKClient(client_options) as client:
+        # Turn 1: Agent explores codebase and generates questions
+        explore_prompt = f"""User's feature request:
 {initial_prompt}
 
 请按以下流程操作：
@@ -507,53 +516,39 @@ async def clarify_requirements(initial_prompt: str, cwd: str = ".", verbose: boo
 确保 JSON 是输出的最后一部分。
 """
 
-    sr = await stream_query(
-        prompt=explore_prompt,
-        options=ClaudeAgentOptions(
-            system_prompt=CLARIFIER_SYSTEM_PROMPT,
-            allowed_tools=[
-                "Read", "Glob", "Grep", "LSP",
-                "WebFetch", "WebSearch",
-            ],
-            max_turns=15,
+        sr = await stream_client_query(
+            client,
+            explore_prompt,
+            agent_name="clarifier",
+            emoji="🔍",
             cwd=cwd,
-        ),
-        agent_name="clarifier",
-        emoji="🔍",
-        cwd=cwd,
-        verbose=verbose,
-        show_tools=True,
-    )
-    explore_text = sr.text
+            verbose=verbose,
+            show_tools=True,
+        )
+        explore_text = sr.text
 
-    # Parse questions and present to user
-    questions_json = _extract_json(explore_text)
-    codebase_context = questions_json.get("codebase_context", "") if questions_json else ""
-    questions_list = questions_json.get("questions", []) if questions_json else []
+        # Parse questions and present to user
+        questions_json = _extract_json(explore_text)
+        codebase_context = questions_json.get("codebase_context", "") if questions_json else ""
+        questions_list = questions_json.get("questions", []) if questions_json else []
 
-    if not questions_list:
-        # Fallback: use generic questions
-        questions_list = [
-            {"question": "这个功能的目标用户是谁？", "options": ["开发者", "终端用户", "运维人员", "所有人"]},
-            {"question": "核心需求是什么？", "options": ["新功能", "性能优化", "Bug修复", "重构"]},
-        ]
+        if not questions_list:
+            # Fallback: use generic questions
+            questions_list = [
+                {"question": "这个功能的目标用户是谁？", "options": ["开发者", "终端用户", "运维人员", "所有人"]},
+                {"question": "核心需求是什么？", "options": ["新功能", "性能优化", "Bug修复", "重构"]},
+            ]
 
-    # Phase 2: Present questions via Rich prompts
-    console.print("\n[bold cyan]Clarification Questions[/bold cyan]")
-    answers = _ask_user_rich(questions_list)
-    answers_text = _format_answers_for_prompt(answers)
+        # Phase 2: Present questions via Rich prompts
+        console.print("\n[bold cyan]Clarification Questions[/bold cyan]")
+        answers = _ask_user_rich(questions_list)
+        answers_text = _format_answers_for_prompt(answers)
 
-    # Phase 3: Agent generates clarified requirements using answers
-    clarify_prompt = f"""User's feature request:
-{initial_prompt}
-
-代码库上下文：
-{codebase_context}
-
-用户对澄清问题的回答：
+        # Turn 2: Agent generates clarified requirements (retains exploration context)
+        clarify_prompt = f"""用户对澄清问题的回答：
 {answers_text}
 
-请根据以上信息，生成 clarified requirements（markdown 格式）。
+请根据你之前的代码库探索结果和用户回答，生成 clarified requirements（markdown 格式）。
 
 输出要求：
 - Clear, detailed description of what needs to be built
@@ -563,20 +558,16 @@ async def clarify_requirements(initial_prompt: str, cwd: str = ".", verbose: boo
 - Temporal Topics (需验证的时效性话题)
 """
 
-    sr = await stream_query(
-        prompt=clarify_prompt,
-        options=ClaudeAgentOptions(
-            system_prompt=CLARIFIER_SYSTEM_PROMPT,
-            max_turns=3,
+        sr = await stream_client_query(
+            client,
+            clarify_prompt,
+            agent_name="clarifier",
+            emoji="📝",
             cwd=cwd,
-        ),
-        agent_name="clarifier",
-        emoji="📝",
-        cwd=cwd,
-        verbose=verbose,
-        status_message="Generating clarified requirements...",
-    )
-    summary_text = sr.text
+            verbose=verbose,
+            status_message="Generating clarified requirements...",
+        )
+        summary_text = sr.text
 
     console.print(Panel(summary_text, title="Clarified Requirements"))
 
@@ -696,8 +687,20 @@ async def explore_and_propose(initial_prompt: str, cwd: str = ".", verbose: bool
     console.print("\n[yellow]深度探索中...[/yellow]")
     console.print("[dim]Agent 正在研究可能的实现方案...[/dim]\n")
 
-    # Phase 1: Agent explores and generates proposals as JSON
-    explore_prompt = CLARIFIER_V2_EXPLORE_PROMPT.format(user_request=initial_prompt) + """
+    # Use ClaudeSDKClient for multi-turn conversation
+    client_options = ClaudeAgentOptions(
+        system_prompt=CLARIFIER_V2_SYSTEM_PROMPT,
+        allowed_tools=[
+            "Read", "Glob", "Grep", "LSP",
+            "WebFetch", "WebSearch", "Task",
+        ],
+        max_turns=25,
+        cwd=cwd,
+    )
+
+    async with ClaudeSDKClient(client_options) as client:
+        # Turn 1: Agent explores and generates proposals as JSON
+        explore_prompt = CLARIFIER_V2_EXPLORE_PROMPT.format(user_request=initial_prompt) + """
 
 完成探索后，输出 JSON 格式的方案提议：
 ```json
@@ -723,69 +726,55 @@ async def explore_and_propose(initial_prompt: str, cwd: str = ".", verbose: bool
 确保 JSON 是输出的最后一部分。
 """
 
-    sr = await stream_query(
-        prompt=explore_prompt,
-        options=ClaudeAgentOptions(
-            system_prompt=CLARIFIER_V2_SYSTEM_PROMPT,
-            allowed_tools=[
-                "Read", "Glob", "Grep", "LSP",
-                "WebFetch", "WebSearch", "Task",
-            ],
-            max_turns=25,
+        sr = await stream_client_query(
+            client,
+            explore_prompt,
+            agent_name="clarifier_v2",
+            emoji="🔍",
             cwd=cwd,
-        ),
-        agent_name="clarifier_v2",
-        emoji="🔍",
-        cwd=cwd,
-        verbose=verbose,
-        show_tools=True,
-    )
-    explore_text = sr.text
+            verbose=verbose,
+            show_tools=True,
+        )
+        explore_text = sr.text
 
-    # Parse proposals and present to user
-    proposals_json = _extract_json(explore_text)
+        # Parse proposals and present to user
+        proposals_json = _extract_json(explore_text)
 
-    if proposals_json and proposals_json.get("proposals"):
-        understanding = proposals_json.get("understanding", "")
-        proposals = proposals_json["proposals"]
+        if proposals_json and proposals_json.get("proposals"):
+            understanding = proposals_json.get("understanding", "")
+            proposals = proposals_json["proposals"]
 
-        if understanding:
-            console.print(f"\n[bold]理解:[/bold] {understanding}\n")
+            if understanding:
+                console.print(f"\n[bold]理解:[/bold] {understanding}\n")
 
-        # Present proposals as a question
-        proposal_question = {
-            "question": "请选择一个实现方案：",
-            "options": [
-                {"label": f"{p['name']}: {p['summary']}"} for p in proposals
-            ],
-        }
-        answers = _ask_user_rich([proposal_question])
+            # Present proposals as a question
+            proposal_question = {
+                "question": "请选择一个实现方案：",
+                "options": [
+                    {"label": f"{p['name']}: {p['summary']}"} for p in proposals
+                ],
+            }
+            answers = _ask_user_rich([proposal_question])
 
-        # Also ask follow-up questions if any
-        follow_ups = proposals_json.get("follow_up_questions", [])
-        if follow_ups:
-            console.print("\n[bold cyan]Follow-up Questions[/bold cyan]")
-            follow_up_answers = _ask_user_rich(follow_ups)
-            answers.update(follow_up_answers)
-    else:
-        # Fallback: generic question
-        answers = _ask_user_rich([
-            {"question": "你对这个需求有什么具体的偏好？", "options": ["简单实现", "完整方案", "最佳实践"]},
-        ])
+            # Also ask follow-up questions if any
+            follow_ups = proposals_json.get("follow_up_questions", [])
+            if follow_ups:
+                console.print("\n[bold cyan]Follow-up Questions[/bold cyan]")
+                follow_up_answers = _ask_user_rich(follow_ups)
+                answers.update(follow_up_answers)
+        else:
+            # Fallback: generic question
+            answers = _ask_user_rich([
+                {"question": "你对这个需求有什么具体的偏好？", "options": ["简单实现", "完整方案", "最佳实践"]},
+            ])
 
-    answers_text = _format_answers_for_prompt(answers)
+        answers_text = _format_answers_for_prompt(answers)
 
-    # Phase 3: Agent generates clarified goal based on user's choice
-    goal_prompt = f"""用户需求：
-{initial_prompt}
-
-探索结果和方案：
-{explore_text[:3000]}
-
-用户的选择和回答：
+        # Turn 2: Agent generates clarified goal (retains exploration context)
+        goal_prompt = f"""用户的选择和回答：
 {answers_text}
 
-请根据以上信息，生成明确的目标描述（markdown 格式），包含：
+请根据你之前的探索结果和用户的选择，生成明确的目标描述（markdown 格式），包含：
 - Clarified Description
 - Scope
 - Non-goals
@@ -793,20 +782,16 @@ async def explore_and_propose(initial_prompt: str, cwd: str = ".", verbose: bool
 - Risks and Mitigations
 """
 
-    sr = await stream_query(
-        prompt=goal_prompt,
-        options=ClaudeAgentOptions(
-            system_prompt=CLARIFIER_V2_SYSTEM_PROMPT,
-            max_turns=3,
+        sr = await stream_client_query(
+            client,
+            goal_prompt,
+            agent_name="clarifier_v2",
+            emoji="📝",
             cwd=cwd,
-        ),
-        agent_name="clarifier_v2",
-        emoji="📝",
-        cwd=cwd,
-        verbose=verbose,
-        status_message="Generating goal summary...",
-    )
-    summary_text = sr.text
+            verbose=verbose,
+            status_message="Generating goal summary...",
+        )
+        summary_text = sr.text
 
     console.print(Panel(summary_text, title="明确后的目标", border_style="green"))
 

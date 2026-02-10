@@ -1,0 +1,109 @@
+{
+  "experiment_name": "exp1_verified_info_unit",
+  "description": "Test pool.py verified info functions",
+  "test_cases": [
+    {
+      "name": "add_then_get_basic",
+      "passed": true,
+      "details": "Expected finding with '2.31.0', got: latest version is 2.31.0",
+      "category": "unit"
+    },
+    {
+      "name": "get_nonexistent_returns_none",
+      "passed": true,
+      "details": "Expected None, got: None",
+      "category": "unit"
+    },
+    {
+      "name": "is_topic_verified_false_initially",
+      "passed": true,
+      "details": "",
+      "category": "unit"
+    },
+    {
+      "name": "is_topic_verified_true_after_add",
+      "passed": true,
+      "details": "",
+      "category": "unit"
+    },
+    {
+      "name": "list_topics_empty_initially",
+      "passed": true,
+      "details": "Got: []",
+      "category": "unit"
+    },
+    {
+      "name": "list_topics_three_after_add",
+      "passed": true,
+      "details": "Expected 3 topics, got 3: ['topic A', 'topic B', 'topic C']",
+      "category": "unit"
+    },
+    {
+      "name": "get_case_insensitive",
+      "passed": true,
+      "details": "",
+      "category": "unit"
+    },
+    {
+      "name": "ten_adds_no_corruption",
+      "passed": true,
+      "details": "all_present=True, has_sections=True",
+      "category": "unit"
+    },
+    {
+      "name": "add_creates_section_if_missing",
+      "passed": true,
+      "details": "topic in pool: True, section: True",
+      "category": "unit"
+    },
+    {
+      "name": "none_yet_removed_in_verified_section",
+      "passed": false,
+      "details": "Verified section still has '(none yet)': ## Verified Information (时效性验证缓存)\n\n<!--\nFormat: [Verified YYYY-MM-DD] <topic>: <finding> (source: <url>)\nWorkers should check here before searching to avoid duplicate queries.\n-->\n\n(none yet)\n- [Verif",
+      "category": "unit"
+    },
+    {
+      "name": "exact_topic_match",
+      "passed": true,
+      "details": "",
+      "category": "unit"
+    },
+    {
+      "name": "partial_topic_no_match",
+      "passed": true,
+      "details": "Partial match returned: None",
+      "category": "unit"
+    },
+    {
+      "name": "worker_imports_verified_functions",
+      "passed": true,
+      "details": "imports: add=True, get=True, is=True",
+      "category": "unit"
+    },
+    {
+      "name": "worker_never_calls_verified_functions",
+      "passed": false,
+      "details": "calls: add=True, get=True, is=True. This confirms the design gap: functions imported but never called by worker code.",
+      "category": "design_gap"
+    },
+    {
+      "name": "explore_prompt_mentions_verified_info",
+      "passed": true,
+      "details": "Explore prompt mentions verified info: True",
+      "category": "unit"
+    },
+    {
+      "name": "implement_prompt_mentions_verified_info",
+      "passed": true,
+      "details": "Implement prompt mentions verified info: True",
+      "category": "unit"
+    },
+    {
+      "name": "worker_has_no_custom_mcp_tools",
+      "passed": true,
+      "details": "Worker tools: \"Read\", \"Glob\", \"Grep\", \"LSP\",\n        \"WebFetch\", \"WebSearch\", \"Task\",. No custom MCP tools available.",
+      "category": "design_gap"
+    }
+  ],
+  "timestamp": "2026-02-09T12:27:27.447200"
+}

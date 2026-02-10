@@ -18,11 +18,38 @@ from claude_agent_sdk import ClaudeAgentOptions
 from rich.console import Console
 
 from .logger import log_tool_call, stream_query
+from .mcp_tools import create_ralph_mcp_server, get_tool_names
 from .pool import clear_handoff_note, read_goal, read_handoff_note, read_pool
 from .prompts import EXPLORE_MODE_ADDENDUM, PLANNER_SYSTEM_PROMPT, build_planner_prompt
 from .utils import extract_json
 
 console = Console()
+
+PLANNER_OUTPUT_SCHEMA = {
+    "type": "json_schema",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string"},
+            "target": {"type": ["string", "null"]},
+            "task_ids": {"type": "array", "items": {"type": "string"}},
+            "reason": {"type": "string"},
+            "new_tasks": {"type": "string"},
+            "question": {"type": "string"},
+            "modification": {"type": "string"},
+            "failure_assumptions": {"type": "string"},
+            "current_approach": {"type": "string"},
+            "blocker": {"type": "string"},
+            "new_direction": {"type": "string"},
+            "attempt_count": {"type": "integer"},
+            "best_score": {"type": "string"},
+            "failure_pattern": {"type": "string"},
+            "new_approach": {"type": "string"},
+            "fork_approaches": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["action", "reason"],
+    },
+}
 
 
 class Action(Enum):
@@ -46,6 +73,9 @@ class Action(Enum):
     PIVOT_RESEARCH = "pivot_research"    # Abandon after research confirms not viable
     PIVOT_WAIT = "pivot_wait"            # Explore alternatives while waiting (alias for HEDGE)
     PIVOT_ITERATION = "pivot_iteration"  # Change direction after multiple failed attempts
+
+    # Session forking
+    FORK = "fork"                        # Try multiple approaches via session forking
 
     # Legacy (kept for compatibility, may be removed)
     DECOMPOSE = "decompose"
@@ -74,12 +104,17 @@ class PlannerDecision:
     failure_pattern: str = ""     # Pattern of failure observed
     new_approach: str = ""        # New approach to try
 
+    # FORK fields
+    fork_approaches: list[str] = None  # List of approach descriptions for FORK
+
     # Execution stats (set after query completes)
     result_stats: Optional[object] = None  # ResultMessage from SDK
 
     def __post_init__(self):
         if self.task_ids is None:
             self.task_ids = []
+        if self.fork_approaches is None:
+            self.fork_approaches = []
 
     @property
     def is_pivot(self) -> bool:
@@ -118,6 +153,10 @@ def _parse_planner_json(obj: dict) -> PlannerDecision:
 
     hedge_for = target if action in (Action.HEDGE, Action.PIVOT_WAIT) else None
 
+    fork_approaches = obj.get("fork_approaches", [])
+    if isinstance(fork_approaches, str):
+        fork_approaches = [fork_approaches]
+
     return PlannerDecision(
         action=action,
         target=target,
@@ -135,128 +174,21 @@ def _parse_planner_json(obj: dict) -> PlannerDecision:
         best_score=str(obj.get("best_score", "")),
         failure_pattern=obj.get("failure_pattern", ""),
         new_approach=obj.get("new_approach", ""),
+        fork_approaches=fork_approaches,
     )
 
 
-def _parse_planner_regex(text: str) -> PlannerDecision:
-    """Parse planner output using regex (legacy fallback)."""
-    action_match = re.search(r"ACTION:\s*(\w+)", text, re.IGNORECASE)
-    action_str = action_match.group(1).lower() if action_match else "skip"
-
-    try:
-        action = Action(action_str)
-    except ValueError:
-        action = Action.SKIP
-
-    target_match = re.search(r"TARGET:\s*(T\d+)", text, re.IGNORECASE)
-    target = target_match.group(1) if target_match else None
-
-    task_ids = []
-    task_ids_match = re.search(r"TASK_IDS:\s*(.+?)(?=\n|$)", text, re.IGNORECASE)
-    if task_ids_match:
-        task_ids = re.findall(r'T\d+', task_ids_match.group(1))
-
-    reason_match = re.search(
-        r"REASON:\s*(.+?)(?=\n(?:NEW_TASKS:|QUESTION:|MODIFICATION:|TASK_IDS:|CURRENT_APPROACH:|ATTEMPT_COUNT:|$))",
-        text, re.IGNORECASE | re.DOTALL
-    )
-    reason = reason_match.group(1).strip() if reason_match else ""
-
-    new_tasks_match = re.search(
-        r"NEW_TASKS:\s*(.+?)(?=\n(?:QUESTION:|MODIFICATION:|$)|\Z)",
-        text, re.IGNORECASE | re.DOTALL
-    )
-    new_tasks = new_tasks_match.group(1).strip() if new_tasks_match else ""
-
-    question_match = re.search(
-        r"QUESTION:\s*(.+?)(?=\n(?:MODIFICATION:|$)|\Z)",
-        text, re.IGNORECASE | re.DOTALL
-    )
-    question = question_match.group(1).strip() if question_match else ""
-
-    modification_match = re.search(
-        r"MODIFICATION:\s*(.+?)(?=\n(?:FAILURE_ASSUMPTIONS:|$)|\Z)",
-        text, re.IGNORECASE | re.DOTALL
-    )
-    modification = modification_match.group(1).strip() if modification_match else ""
-
-    failure_match = re.search(
-        r"FAILURE_ASSUMPTIONS:\s*(.+?)(?=\n(?:NEW_TASKS:|$)|\Z)",
-        text, re.IGNORECASE | re.DOTALL
-    )
-    failure_assumptions = failure_match.group(1).strip() if failure_match else ""
-
-    current_approach_match = re.search(
-        r"CURRENT_APPROACH:\s*(.+?)(?=\n(?:BLOCKER:|$)|\Z)",
-        text, re.IGNORECASE | re.DOTALL
-    )
-    current_approach = current_approach_match.group(1).strip() if current_approach_match else ""
-
-    blocker_match = re.search(
-        r"BLOCKER:\s*(.+?)(?=\n(?:NEW_DIRECTION:|$)|\Z)",
-        text, re.IGNORECASE | re.DOTALL
-    )
-    blocker = blocker_match.group(1).strip() if blocker_match else ""
-
-    new_direction_match = re.search(
-        r"NEW_DIRECTION:\s*(.+?)(?=\n(?:REASON:|NEW_TASKS:|$)|\Z)",
-        text, re.IGNORECASE | re.DOTALL
-    )
-    new_direction = new_direction_match.group(1).strip() if new_direction_match else ""
-
-    attempt_count_match = re.search(r"ATTEMPT_COUNT:\s*(\d+)", text, re.IGNORECASE)
-    attempt_count = int(attempt_count_match.group(1)) if attempt_count_match else 0
-
-    best_score_match = re.search(r"BEST_SCORE:\s*(.+?)(?=\n|$)", text, re.IGNORECASE)
-    best_score = best_score_match.group(1).strip() if best_score_match else ""
-
-    failure_pattern_match = re.search(
-        r"FAILURE_PATTERN:\s*(.+?)(?=\n(?:NEW_APPROACH:|$)|\Z)",
-        text, re.IGNORECASE | re.DOTALL
-    )
-    failure_pattern = failure_pattern_match.group(1).strip() if failure_pattern_match else ""
-
-    new_approach_match = re.search(
-        r"NEW_APPROACH:\s*(.+?)(?=\n(?:REASON:|NEW_TASKS:|$)|\Z)",
-        text, re.IGNORECASE | re.DOTALL
-    )
-    new_approach = new_approach_match.group(1).strip() if new_approach_match else ""
-
-    hedge_for = target if action in (Action.HEDGE, Action.PIVOT_WAIT) else None
-
-    return PlannerDecision(
-        action=action,
-        target=target,
-        task_ids=task_ids,
-        reason=reason,
-        new_tasks=new_tasks,
-        question=question,
-        modification=modification,
-        hedge_for=hedge_for,
-        failure_assumptions=failure_assumptions,
-        current_approach=current_approach,
-        blocker=blocker,
-        new_direction=new_direction,
-        attempt_count=attempt_count,
-        best_score=best_score,
-        failure_pattern=failure_pattern,
-        new_approach=new_approach,
-    )
+def parse_planner_output(structured_output: dict | None, text: str) -> PlannerDecision:
+    """Parse planner output. Prefers structured_output, falls back to JSON extraction."""
+    obj = structured_output
+    if not obj:
+        obj = extract_json(text)
+    if obj and "action" in obj:
+        return _parse_planner_json(obj)
+    return PlannerDecision(action=Action.SKIP, reason="Failed to parse planner output")
 
 
-def parse_planner_output(text: str) -> PlannerDecision:
-    """Parse planner output into a PlannerDecision.
-
-    Tries JSON first (more reliable), falls back to regex for backwards compatibility.
-    """
-    json_obj = extract_json(text)
-    if json_obj and "action" in json_obj:
-        return _parse_planner_json(json_obj)
-
-    return _parse_planner_regex(text)
-
-
-async def plan(cwd: str = ".", verbose: bool = False, explore_mode: bool = False) -> PlannerDecision:
+async def plan(cwd: str = ".", verbose: bool = False, explore_mode: bool = False, use_mcp: bool = False, thinking_budget: int | None = None) -> PlannerDecision:
     """
     Run the planner to decide the next action.
 
@@ -296,20 +228,39 @@ async def plan(cwd: str = ".", verbose: bool = False, explore_mode: bool = False
     if explore_mode:
         system_prompt = f"{PLANNER_SYSTEM_PROMPT}\n\n{EXPLORE_MODE_ADDENDUM}"
 
+    # Create MCP server for planner tools (skip if use_mcp=False)
+    base_tools = [
+        "Read", "Glob", "Grep", "Write", "Edit",
+        "LSP",
+        "WebFetch", "WebSearch",
+    ]
+    if use_mcp:
+        ralph_mcp = create_ralph_mcp_server(cwd, role="planner")
+        ralph_tool_names = get_tool_names("planner")
+        allowed_tools = base_tools + ralph_tool_names
+        mcp_servers = {"ralph": ralph_mcp}
+    else:
+        allowed_tools = base_tools
+        mcp_servers = None
+
+    # Configure thinking for planner (default: 10000 — decision-making benefits most)
+    planner_options = ClaudeAgentOptions(
+        system_prompt=system_prompt,
+        allowed_tools=allowed_tools,
+        permission_mode="acceptEdits",
+        max_turns=15,
+        cwd=cwd,
+        output_format=PLANNER_OUTPUT_SCHEMA,
+        mcp_servers=mcp_servers,
+    )
+    effective = thinking_budget if thinking_budget is not None else 10_000
+    if effective > 0:
+        planner_options.max_thinking_tokens = effective
+
     # Run planner query with unified streaming
     sr = await stream_query(
         prompt=prompt,
-        options=ClaudeAgentOptions(
-            system_prompt=system_prompt,
-            allowed_tools=[
-                "Read", "Glob", "Grep", "Write", "Edit",
-                "LSP",
-                "WebFetch", "WebSearch",
-            ],
-            permission_mode="acceptEdits",
-            max_turns=15,
-            cwd=cwd,
-        ),
+        options=planner_options,
         agent_name="planner",
         emoji="🧠",
         cwd=cwd,
@@ -317,6 +268,6 @@ async def plan(cwd: str = ".", verbose: bool = False, explore_mode: bool = False
     )
 
     # Parse and return decision
-    decision = parse_planner_output(sr.text)
+    decision = parse_planner_output(sr.structured_output, sr.text)
     decision.result_stats = sr.result_stats
     return decision

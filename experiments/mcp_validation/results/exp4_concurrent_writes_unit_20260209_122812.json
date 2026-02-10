@@ -1,0 +1,85 @@
+{
+  "experiment_name": "exp4_concurrent_writes_unit",
+  "description": "Test pool.py file locking and atomic writes under contention",
+  "test_cases": [
+    {
+      "name": "10_concurrent_findings_all_present",
+      "passed": true,
+      "details": "Found 10/10 findings. Errors: []",
+      "category": "unit"
+    },
+    {
+      "name": "20_concurrent_progress_all_present",
+      "passed": true,
+      "details": "Found 20/20 progress entries. Errors: []",
+      "category": "unit"
+    },
+    {
+      "name": "10_concurrent_verified_info_all_present",
+      "passed": true,
+      "details": "Found 10/10 verified info entries. Errors: []",
+      "category": "unit"
+    },
+    {
+      "name": "30_mixed_concurrent_all_present",
+      "passed": true,
+      "details": "Findings: 10/10, Progress: 10/10, Info: 10/10. Errors: []",
+      "category": "unit"
+    },
+    {
+      "name": "50_rapid_fire_stress_test",
+      "passed": true,
+      "details": "Found 50/50 entries. Lost: 0. Errors: 0",
+      "category": "stress"
+    },
+    {
+      "name": "structure_intact_after_20_writes",
+      "passed": true,
+      "details": "Active=True, Completed=True, Findings=True, Verified=True, Progress=True",
+      "category": "unit"
+    },
+    {
+      "name": "no_temp_files_left",
+      "passed": true,
+      "details": "Temp files found: []",
+      "category": "unit"
+    },
+    {
+      "name": "file_lock_timeout_works",
+      "passed": true,
+      "details": "Timeout occurred: True, Error: None",
+      "category": "unit"
+    },
+    {
+      "name": "prompt_instructs_edit_pool_directly",
+      "passed": true,
+      "details": "Worker prompts mention Findings section updates: True. Agents use Read/Edit tools to modify pool.md directly, bypassing pool.py locks. This is the core concurrency risk.",
+      "category": "design_gap"
+    },
+    {
+      "name": "worker_has_edit_write_tools",
+      "passed": true,
+      "details": "Worker has Edit: True, Write: True. These bypass pool.py file locking when agents modify pool.md directly.",
+      "category": "design_gap"
+    },
+    {
+      "name": "simulated_edit_race_loses_data",
+      "passed": true,
+      "details": "Agent1 finding present: False, Agent2 finding present: True. This proves: when agents use Edit/Write tools directly (bypassing pool.py), concurrent writes cause data loss. Agent2's write overwrites Agent1's changes.",
+      "category": "design_gap"
+    },
+    {
+      "name": "locked_writes_preserve_both",
+      "passed": true,
+      "details": "Agent1: True, Agent2: True, Errors: []. With pool.py locks, both writes are preserved.",
+      "category": "design_gap"
+    },
+    {
+      "name": "large_content_concurrent_safe",
+      "passed": true,
+      "details": "Found 10/10 large findings (1KB each). Errors: []",
+      "category": "stress"
+    }
+  ],
+  "timestamp": "2026-02-09T12:28:07.071412"
+}

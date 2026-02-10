@@ -44,6 +44,9 @@ def run_cmd(
     explore: bool = typer.Option(
         False, "--explore", "-e", help="Explore mode: don't DONE until user says stop"
     ),
+    thinking_budget: int = typer.Option(
+        None, "--thinking", help="Thinking token budget (0=off, None=agent defaults)"
+    ),
 ) -> None:
     """
     Run the complete Ralph workflow: clarify → init pool → execute loop.
@@ -63,6 +66,7 @@ def run_cmd(
                 verbose=verbose,
                 target_score=target_score,
                 explore_mode=explore,
+                thinking_budget=thinking_budget,
             )
         )
         raise typer.Exit(0 if success else 1)
@@ -83,6 +87,9 @@ def resume_cmd(
     ),
     explore: bool = typer.Option(
         False, "--explore", "-e", help="Explore mode: don't DONE until user says stop"
+    ),
+    thinking_budget: int = typer.Option(
+        None, "--thinking", help="Thinking token budget (0=off, None=agent defaults)"
     ),
 ) -> None:
     """
@@ -145,7 +152,7 @@ def resume_cmd(
         console.print("\n[green]继续执行...[/green]\n")
 
     try:
-        success = asyncio.run(resume(cwd=cwd, max_iterations=max_iterations, verbose=verbose, target_score=target_score, explore_mode=explore))
+        success = asyncio.run(resume(cwd=cwd, max_iterations=max_iterations, verbose=verbose, target_score=target_score, explore_mode=explore, thinking_budget=thinking_budget))
         raise typer.Exit(0 if success else 1)
     except KeyboardInterrupt:
         console.print("\n[yellow]Cancelled by user[/yellow]")

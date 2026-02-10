@@ -12,6 +12,7 @@ Unix only (termios/tty). Falls back to simple input() on unsupported platforms.
 """
 
 import os
+import re
 import sys
 import unicodedata
 
@@ -96,6 +97,22 @@ def _pad_to_width(s: str, width: int) -> str:
     return s + " " * max(0, width - _visual_width(s))
 
 
+_ANSI_RE = re.compile(r"\x1b\[[\d;]*[a-zA-Z]|\x1b\?\d*[a-zA-Z]")
+
+
+def _strip_ansi(s: str) -> str:
+    """Remove ANSI escape sequences from string."""
+    return _ANSI_RE.sub("", s)
+
+
+def _physical_lines(text: str, term_cols: int) -> int:
+    """How many physical terminal lines does *text* occupy (accounting for wrap)?"""
+    w = _visual_width(_strip_ansi(text))
+    if w <= term_cols:
+        return 1
+    return (w + term_cols - 1) // term_cols
+
+
 # ── Normalize options ────────────────────────────────────────────────────
 
 
@@ -164,10 +181,34 @@ def display_question(question: dict) -> str:
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
 
+    try:
+        term_cols = os.get_terminal_size(fd).columns
+    except OSError:
+        term_cols = 80
+
     # Highlight bar width
     num_w = len(str(len(options)))
     max_label_w = max((_visual_width(o["label"]) for o in options), default=0)
     bar_w = max(max_label_w + num_w + 7, 22)
+
+    # Clamp bar_w to terminal width minus prefix overhead ("  │ " = ~6 chars)
+    prefix_overhead = 6
+    bar_w = min(bar_w, term_cols - prefix_overhead)
+
+    # Truncate labels that would exceed bar_w
+    for opt in options:
+        label = opt["label"]
+        if _visual_width(label) > bar_w - num_w - 7:
+            max_w = bar_w - num_w - 10
+            truncated = ""
+            w = 0
+            for ch in label:
+                cw = 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
+                if w + cw > max_w:
+                    break
+                truncated += ch
+                w += cw
+            opt["label"] = truncated + "..."
 
     # Keyboard hint
     if multi:
@@ -199,58 +240,67 @@ def display_question(question: dict) -> str:
                 if active:
                     content = f" ❯ {chk_char} {num} {label}"
                     padded = _pad_to_width(content, bar_w)
-                    out.write(f"{BAR} {BG_ACTIVE}{CYAN}{BOLD}{padded}{RESET}\n")
+                    line_content = f"{BAR} {BG_ACTIVE}{CYAN}{BOLD}{padded}{RESET}"
+                    out.write(line_content + "\n")
                 else:
                     chk = f"{CYAN}◉{RESET}" if i in checked else f"{DIM}○{RESET}"
-                    out.write(f"{BAR}    {chk} {GRAY}{num}{RESET} {label}\n")
+                    line_content = f"{BAR}    {chk} {GRAY}{num}{RESET} {label}"
+                    out.write(line_content + "\n")
             else:
                 if active:
                     content = f" ❯ {num} {label}"
                     padded = _pad_to_width(content, bar_w)
-                    out.write(f"{BAR} {BG_ACTIVE}{CYAN}{BOLD}{padded}{RESET}\n")
+                    line_content = f"{BAR} {BG_ACTIVE}{CYAN}{BOLD}{padded}{RESET}"
+                    out.write(line_content + "\n")
                 else:
-                    out.write(f"{BAR}    {GRAY}{num}{RESET} {label}\n")
-            lines += 1
+                    line_content = f"{BAR}    {GRAY}{num}{RESET} {label}"
+                    out.write(line_content + "\n")
+            lines += _physical_lines(line_content, term_cols)
 
             if desc:
                 if active:
-                    out.write(f"{BAR} {BG_ACTIVE}{GRAY}      {desc} {RESET}\n")
+                    line_content = f"{BAR} {BG_ACTIVE}{GRAY}      {desc} {RESET}"
                 else:
-                    out.write(f"{BAR}       {DIM}{desc}{RESET}\n")
-                lines += 1
+                    line_content = f"{BAR}       {DIM}{desc}{RESET}"
+                out.write(line_content + "\n")
+                lines += _physical_lines(line_content, term_cols)
 
             if i < len(options) - 1 and not desc:
                 out.write(f"{BAR}\n")
                 lines += 1
 
         # Separator
-        out.write(f"  {CYAN}├{'─' * (bar_w + 1)}{RESET}\n")
-        lines += 1
+        sep_content = f"  {CYAN}├{'─' * (bar_w + 1)}{RESET}"
+        out.write(sep_content + "\n")
+        lines += _physical_lines(sep_content, term_cols)
 
         # Text input area
         is_typing = cursor == type_idx
         type_line = lines
         if typed_text:
             if is_typing:
-                out.write(f"{BAR}  {CYAN}❯{RESET} {typed_text}")
+                line_content = f"{BAR}  {CYAN}❯{RESET} {typed_text}"
             else:
-                out.write(f"{BAR}    {typed_text}")
+                line_content = f"{BAR}    {typed_text}"
         else:
             if is_typing:
                 content = " ❯ Type something."
                 padded = _pad_to_width(content, bar_w)
-                out.write(f"{BAR} {BG_ACTIVE}{GRAY}{padded}{RESET}")
+                line_content = f"{BAR} {BG_ACTIVE}{GRAY}{padded}{RESET}"
             else:
-                out.write(f"{BAR}    {GRAY}Type something.{RESET}")
-        lines += 1
+                line_content = f"{BAR}    {GRAY}Type something.{RESET}"
+        out.write(line_content)
+        lines += _physical_lines(line_content, term_cols)
 
         # Bottom line
-        out.write(f"\n  {CYAN}╰{'─' * (bar_w + 1)}{RESET}")
-        lines += 1
+        bottom_content = f"  {CYAN}╰{'─' * (bar_w + 1)}{RESET}"
+        out.write("\n" + bottom_content)
+        lines += _physical_lines(bottom_content, term_cols)
 
         # Hint
-        out.write(f"\n    {hint}")
-        lines += 1
+        hint_content = f"    {hint}"
+        out.write("\n" + hint_content)
+        lines += _physical_lines(hint_content, term_cols)
 
         # Move cursor back to input line when typing
         new_offset = 0

@@ -7,28 +7,58 @@ Worker agent: executes EXPLORE and IMPLEMENT tasks.
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, Optional
 
-from claude_agent_sdk import ClaudeAgentOptions
+from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, SandboxSettings
 from rich.console import Console
 from rich.panel import Panel
 
 from .logger import format_tool_line, log_tool_call, shorten_path, stream_query
+from .mcp_tools import create_ralph_mcp_server, get_tool_names
 from .pool import (
-    add_verified_info,
-    get_verified_info,
-    is_topic_verified,
     read_goal,
     read_pool,
     read_task,
 )
 from .prompts import (
+    WORKER_ADVERSARIAL_INVESTIGATION_SECTION,
     WORKER_EXPLORE_PROMPT,
     WORKER_IMPLEMENT_PROMPT,
     build_worker_prompt,
 )
 
 console = Console()
+
+# Subagents available to worker via the Task tool
+WORKER_SUBAGENTS = {
+    "researcher": AgentDefinition(
+        description="Deep research agent for investigating specific technical questions. "
+                    "Use when you need thorough investigation of a topic, API, or library.",
+        prompt="You are a research specialist. Investigate thoroughly and report findings.",
+        tools=["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
+        model="sonnet",
+    ),
+    "test-writer": AgentDefinition(
+        description="Test writing specialist. Use to write comprehensive test cases "
+                    "for implemented code.",
+        prompt="You are a test writing specialist. Write thorough pytest tests.",
+        tools=["Read", "Glob", "Grep", "Write", "Edit"],
+        model="sonnet",
+    ),
+}
+
+WORKER_EXPLORE_SCHEMA = {
+    "type": "json_schema",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+            "findings_summary": {"type": "string"},
+        },
+        "required": ["confidence"],
+    },
+}
 
 
 @dataclass
@@ -59,20 +89,19 @@ def _format_result_tokens(result_stats) -> str:
     return format_tokens(result_stats.usage)
 
 
-def extract_worker_metadata(text: str, task_type: str) -> dict:
+def extract_worker_metadata(structured_output: dict | None, text: str, task_type: str) -> dict:
     """Parse worker output to extract key information.
 
-    Note: Worker always returns success=True. The Reviewer is responsible
-    for determining if the task actually succeeded. This avoids fragile
-    heuristics based on text pattern matching.
+    Prefers structured_output, falls back to regex extraction.
+    Worker always returns success=True — the Reviewer determines actual success.
     """
-    result = {"success": True}  # Always succeed, let Reviewer decide
-
-    # Extract confidence (for EXPLORE)
-    confidence_match = re.search(r"Confidence:\s*(high|medium|low)", text, re.IGNORECASE)
-    if confidence_match:
-        result["confidence"] = confidence_match.group(1).lower()
-
+    result = {"success": True}
+    if structured_output and "confidence" in structured_output:
+        result["confidence"] = structured_output["confidence"]
+    else:
+        confidence_match = re.search(r"Confidence:\s*(high|medium|low)", text, re.IGNORECASE)
+        if confidence_match:
+            result["confidence"] = confidence_match.group(1).lower()
     return result
 
 
@@ -81,6 +110,9 @@ async def work(
     task_type: Literal["EXPLORE", "IMPLEMENT"],
     cwd: str = ".",
     verbose: bool = False,
+    use_mcp: bool = False,
+    thinking_budget: int | None = None,
+    adversarial_findings: Optional[str] = None,
 ) -> WorkerResult:
     """
     Execute a task (EXPLORE or IMPLEMENT).
@@ -129,30 +161,71 @@ async def work(
         task_detail=task_detail,
     )
 
-    # Configure tools based on task type
-    base_tools = [
+    # Inject adversarial findings for IMPLEMENT tasks when available
+    if adversarial_findings and task_type == "IMPLEMENT":
+        from .pool import AUDITS_DIR
+        adversarial_section = WORKER_ADVERSARIAL_INVESTIGATION_SECTION.format(
+            audits_dir=str(Path(cwd) / AUDITS_DIR),
+            task_id=task_id,
+            attempt="current",
+            findings_content=adversarial_findings,
+        )
+        prompt += "\n" + adversarial_section
+
+    # Configure tools based on task type (skip MCP if use_mcp=False)
+    core_tools = [
         "Read", "Glob", "Grep", "LSP",
         "WebFetch", "WebSearch", "Task",
     ]
+    if use_mcp:
+        ralph_mcp = create_ralph_mcp_server(cwd, role="worker")
+        ralph_tool_names = get_tool_names("worker")
+        base_tools = core_tools + ralph_tool_names
+        mcp_servers = {"ralph": ralph_mcp}
+    else:
+        base_tools = core_tools
+        mcp_servers = None
 
     if task_type == "IMPLEMENT":
         tools = base_tools + ["Write", "Edit", "Bash"]
         permission_mode = "acceptEdits"
+        sandbox = SandboxSettings(
+            enabled=True,
+            autoAllowBashIfSandboxed=True,
+            allowUnsandboxedCommands=False,
+        )
+        agents = WORKER_SUBAGENTS
     else:
-        # EXPLORE needs Write/Edit to update task files and pool.md
+        # EXPLORE doesn't have Bash, acceptEdits is fine
         tools = base_tools + ["Write", "Edit"]
         permission_mode = "acceptEdits"
+        sandbox = None
+        agents = None
+
+    # Only EXPLORE gets structured output; IMPLEMENT needs free-form text
+    worker_output_format = WORKER_EXPLORE_SCHEMA if task_type == "EXPLORE" else None
+
+    # Configure thinking for worker (default: 0 — mostly tool calls)
+    worker_options = ClaudeAgentOptions(
+        system_prompt=system_prompt,
+        allowed_tools=tools,
+        permission_mode=permission_mode,
+        sandbox=sandbox,
+        enable_file_checkpointing=task_type == "IMPLEMENT",
+        agents=agents,
+        max_turns=50,
+        cwd=cwd,
+        output_format=worker_output_format,
+        mcp_servers=mcp_servers,
+    )
+    effective = thinking_budget if thinking_budget is not None else 0
+    if effective > 0:
+        worker_options.max_thinking_tokens = effective
 
     # Run worker query with unified streaming
     sr = await stream_query(
         prompt=prompt,
-        options=ClaudeAgentOptions(
-            system_prompt=system_prompt,
-            allowed_tools=tools,
-            permission_mode=permission_mode,
-            max_turns=50,
-            cwd=cwd,
-        ),
+        options=worker_options,
         agent_name="worker",
         emoji="💭",
         cwd=cwd,
@@ -163,7 +236,7 @@ async def work(
     result_stats = sr.result_stats
 
     # Parse result
-    parsed = extract_worker_metadata(result_text, task_type)
+    parsed = extract_worker_metadata(sr.structured_output, result_text, task_type)
 
     # Build stats line
     stats_parts = [f"{tool_count} tool calls"]

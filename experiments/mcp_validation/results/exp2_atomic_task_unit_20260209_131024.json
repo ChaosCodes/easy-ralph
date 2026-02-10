@@ -1,0 +1,127 @@
+{
+  "experiment_name": "exp2_atomic_task_unit",
+  "description": "Test pool.py task creation and consistency checking",
+  "test_cases": [
+    {
+      "name": "init_task_creates_file",
+      "passed": true,
+      "details": "exists=True, has title=True, has type=True",
+      "category": "unit"
+    },
+    {
+      "name": "init_task_implement_type",
+      "passed": true,
+      "details": "Has IMPLEMENT and Acceptance Criteria: True",
+      "category": "unit"
+    },
+    {
+      "name": "extract_ids_finds_all",
+      "passed": true,
+      "details": "Found: ['T001', 'T002', 'T003']",
+      "category": "unit"
+    },
+    {
+      "name": "detect_pool_without_file",
+      "passed": true,
+      "details": "Pool IDs: ['T001'], Files: [], Missing: ['T001']",
+      "category": "consistency"
+    },
+    {
+      "name": "detect_file_without_pool_entry",
+      "passed": true,
+      "details": "Pool IDs: [], Files: ['T099'], Orphans: ['T099']",
+      "category": "consistency"
+    },
+    {
+      "name": "ensure_creates_missing_files",
+      "passed": true,
+      "details": "Created: ['T001', 'T002', 'T003'], Before: [], After: ['T001', 'T002', 'T003']",
+      "category": "unit"
+    },
+    {
+      "name": "ensure_idempotent_no_recreate",
+      "passed": true,
+      "details": "Should create nothing, created: []",
+      "category": "unit"
+    },
+    {
+      "name": "ensure_handles_15_tasks",
+      "passed": true,
+      "details": "Expected 15 created, got 15: ['T001', 'T002', 'T003', 'T004', 'T005', 'T006', 'T007', 'T008', 'T009', 'T010', 'T011', 'T012', 'T013', 'T014', 'T015']",
+      "category": "unit"
+    },
+    {
+      "name": "table_format_standard",
+      "passed": true,
+      "details": "Format 'standard': extracted ['T001']",
+      "category": "robustness"
+    },
+    {
+      "name": "table_format_extra_spaces",
+      "passed": true,
+      "details": "Format 'extra_spaces': extracted ['T001']",
+      "category": "robustness"
+    },
+    {
+      "name": "table_format_no_trailing_pipe",
+      "passed": true,
+      "details": "Format 'no_trailing_pipe': extracted ['T001']",
+      "category": "robustness"
+    },
+    {
+      "name": "table_format_bold_id",
+      "passed": true,
+      "details": "Format 'bold_id': extracted ['T001']",
+      "category": "robustness"
+    },
+    {
+      "name": "table_format_mixed_case",
+      "passed": true,
+      "details": "Format 'mixed_case': extracted ['T001']",
+      "category": "robustness"
+    },
+    {
+      "name": "table_format_with_link",
+      "passed": true,
+      "details": "Format 'with_link': extracted ['T001']",
+      "category": "robustness"
+    },
+    {
+      "name": "id_format_T001",
+      "passed": true,
+      "details": "ID 'T001' (standard 3-digit): found=True, expected=True",
+      "category": "robustness"
+    },
+    {
+      "name": "id_format_T999",
+      "passed": true,
+      "details": "ID 'T999' (max 3-digit): found=True, expected=True",
+      "category": "robustness"
+    },
+    {
+      "name": "id_format_T1000",
+      "passed": true,
+      "details": "ID 'T1000' (4-digit): found=True, expected=True",
+      "category": "robustness"
+    },
+    {
+      "name": "id_format_T00001",
+      "passed": true,
+      "details": "ID 'T00001' (5-digit): found=True, expected=True",
+      "category": "robustness"
+    },
+    {
+      "name": "planner_prompt_has_sync_rule",
+      "passed": true,
+      "details": "Planner prompt has explicit sync rule: True",
+      "category": "design_gap"
+    },
+    {
+      "name": "orchestrator_has_safety_net",
+      "passed": true,
+      "details": "Orchestrator calls ensure_task_files_exist: True. This is a code-level safety net but adds latency and creates minimal task files.",
+      "category": "design_gap"
+    }
+  ],
+  "timestamp": "2026-02-09T13:10:24.749046"
+}

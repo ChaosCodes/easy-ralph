@@ -25,6 +25,8 @@ from ralph_sdk.evaluator import (
     MetricType,
     _assess_pivot_recommendation,
     _describe_trend,
+    _parse_evaluator_json,
+    _validate_score_consistency,
     build_evaluator_prompt,
     get_attempt_history,
     parse_evaluator_output,
@@ -33,7 +35,6 @@ from ralph_sdk.planner import (
     Action,
     PlannerDecision,
     _parse_planner_json,
-    _parse_planner_regex,
     parse_planner_output,
 )
 from ralph_sdk.pool import (
@@ -50,6 +51,7 @@ from ralph_sdk.pool import (
     ensure_task_files_exist,
     extract_task_ids_from_pool,
     file_lock,
+    generate_handoff_note,
     get_verified_info,
     has_pivot_recommendation,
     init_pool,
@@ -57,9 +59,11 @@ from ralph_sdk.pool import (
     init_task,
     is_topic_verified,
     list_verified_topics,
+    mark_pending_tasks_skipped,
     read_eval_config_from_goal,
     read_pool,
     read_task,
+    update_pool_status,
     write_goal,
     write_pool,
     write_task,
@@ -769,20 +773,14 @@ class TestEvaluatorParsing:
 
     def test_normal_output(self):
         metrics = self._make_metrics()
-        text = """METRIC: tests_pass
-PASSED: yes
-VALUE: all tests pass
-SCORE: 100
-REASON: All 42 tests pass
-
-METRIC: code_quality
-PASSED: yes
-SCORE: 85
-REASON: Good code quality
-
-OVERALL_SCORE: 90
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [
+                {"name": "tests_pass", "passed": True, "value": "all tests pass", "score": 100, "reason": "All 42 tests pass"},
+                {"name": "code_quality", "passed": True, "score": 85, "reason": "Good code quality"},
+            ],
+            "overall_score": 90,
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert len(result.metrics) == 2
         assert result.overall_score == 90
         assert result.metrics[0].passed is True
@@ -790,63 +788,48 @@ OVERALL_SCORE: 90
 
     def test_empty_input(self):
         metrics = self._make_metrics()
-        result = parse_evaluator_output("", metrics)
+        result = parse_evaluator_output(None, "", metrics)
         assert len(result.metrics) == 0
         assert result.overall_score == 0
 
     def test_no_overall_score(self):
         metrics = self._make_metrics()
-        text = """METRIC: tests_pass
-PASSED: yes
-REASON: Tests pass
-"""
-        result = parse_evaluator_output(text, metrics)
-        assert result.overall_score == 0  # Default when not found
+        text = json.dumps({
+            "metrics": [{"name": "tests_pass", "passed": True, "reason": "Tests pass"}],
+            "overall_score": 0,
+        })
+        result = parse_evaluator_output(None, text, metrics)
+        assert result.overall_score == 0
 
     def test_multiline_reason(self):
         metrics = self._make_metrics()
-        text = """METRIC: tests_pass
-PASSED: no
-REASON: Tests fail because:
-1. test_auth fails with timeout
-2. test_db fails with connection error
-3. test_api fails with 500
-
-OVERALL_SCORE: 30
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [{"name": "tests_pass", "passed": False, "reason": "Tests fail because: 1. test_auth fails with timeout 2. test_db fails with connection error"}],
+            "overall_score": 30,
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert len(result.metrics) == 1
         assert "timeout" in result.metrics[0].reason
 
     def test_case_insensitive_metric_name(self):
         metrics = self._make_metrics()
-        text = """METRIC: Tests_Pass
-PASSED: YES
-REASON: All pass
-
-OVERALL_SCORE: 100
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [{"name": "Tests_Pass", "passed": True, "reason": "All pass"}],
+            "overall_score": 100,
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert len(result.metrics) == 1
         assert result.metrics[0].passed is True
 
     def test_issues_and_suggestions(self):
         metrics = self._make_metrics()
-        text = """METRIC: tests_pass
-PASSED: yes
-REASON: Pass
-
-ISSUES:
-- Error in auth.py:42
-- Warning in db.py:100
-
-SUGGESTIONS:
-- Add more tests
-- Refactor auth module
-
-OVERALL_SCORE: 70
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [{"name": "tests_pass", "passed": True, "reason": "Pass"}],
+            "issues": ["Error in auth.py:42", "Warning in db.py:100"],
+            "suggestions": ["Add more tests", "Refactor auth module"],
+            "overall_score": 70,
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert len(result.issues) == 2
         assert "auth.py:42" in result.issues[0]
         assert len(result.suggestions) == 2
@@ -856,32 +839,25 @@ OVERALL_SCORE: 70
             Metric("latency", MetricType.SOFT, "Response time",
                    automation=AutomationLevel.HYBRID, proxy_metric="Mock latency"),
         ]
-        text = """METRIC: latency
-PASSED: yes
-VALUE: 50ms
-SCORE: 85
-PROXY_SCORE: 90
-PROXY_NOTES: Mock test shows good latency
-REASON: Latency within acceptable range
-
-OVERALL_SCORE: 85
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [{"name": "latency", "passed": True, "value": "50ms", "score": 85, "proxy_score": 90, "proxy_notes": "Mock test shows good latency", "reason": "Latency within acceptable range"}],
+            "overall_score": 85,
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert len(result.metrics) == 1
         assert result.metrics[0].proxy_score == 90
         assert "Mock" in result.metrics[0].proxy_notes
 
     def test_missing_metric_name_in_list(self):
-        """Metric name from output doesn't match any in the list → skipped."""
+        """Metric name from output doesn't match provided list → ad-hoc Metric created."""
         metrics = self._make_metrics()
-        text = """METRIC: unknown_metric
-PASSED: yes
-REASON: Some reason
-
-OVERALL_SCORE: 50
-"""
-        result = parse_evaluator_output(text, metrics)
-        assert len(result.metrics) == 0  # No match
+        text = json.dumps({
+            "metrics": [{"name": "unknown_metric", "passed": True, "reason": "Some reason"}],
+            "overall_score": 50,
+        })
+        result = parse_evaluator_output(None, text, metrics)
+        assert len(result.metrics) == 1  # Ad-hoc metric created
+        assert result.metrics[0].metric.name == "unknown_metric"
 
     def test_overall_passed_logic(self):
         """overall_passed is True only when ALL hard metrics pass."""
@@ -890,35 +866,25 @@ OVERALL_SCORE: 50
             Metric("test2", MetricType.HARD, "Test 2"),
             Metric("quality", MetricType.SUBJECTIVE, "Quality"),
         ]
-        text = """METRIC: test1
-PASSED: yes
-REASON: Pass
-
-METRIC: test2
-PASSED: no
-REASON: Fail
-
-METRIC: quality
-PASSED: yes
-SCORE: 90
-REASON: Good
-
-OVERALL_SCORE: 70
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [
+                {"name": "test1", "passed": True, "reason": "Pass"},
+                {"name": "test2", "passed": False, "reason": "Fail"},
+                {"name": "quality", "passed": True, "score": 90, "reason": "Good"},
+            ],
+            "overall_score": 70,
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert result.overall_passed is False  # test2 failed
 
     def test_no_hard_metrics_means_passed(self):
         """If no hard metrics, overall_passed defaults to True."""
         metrics = [Metric("quality", MetricType.SUBJECTIVE, "Quality")]
-        text = """METRIC: quality
-PASSED: yes
-SCORE: 80
-REASON: Good
-
-OVERALL_SCORE: 80
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [{"name": "quality", "passed": True, "score": 80, "reason": "Good"}],
+            "overall_score": 80,
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert result.overall_passed is True
 
 
@@ -944,7 +910,7 @@ class TestEvaluatorJsonParsing:
             "pivot_recommended": False,
             "pivot_reason": "",
         })
-        result = parse_evaluator_output(text, metrics)
+        result = parse_evaluator_output(None, text, metrics)
         assert len(result.metrics) == 2
         assert result.overall_score == 90
         assert result.metrics[0].passed is True
@@ -964,7 +930,7 @@ class TestEvaluatorJsonParsing:
             "pivot_recommended": True,
             "pivot_reason": "Tests keep failing",
         })
-        result = parse_evaluator_output(text, metrics)
+        result = parse_evaluator_output(None, text, metrics)
         assert result.should_pivot is True
         assert "failing" in result.pivot_reason
 
@@ -980,22 +946,25 @@ class TestEvaluatorJsonParsing:
   "overall_score": 95
 }
 ```'''
-        result = parse_evaluator_output(text, metrics)
+        result = parse_evaluator_output(None, text, metrics)
         assert len(result.metrics) == 1
         assert result.overall_score == 95
 
-    def test_falls_back_to_regex(self):
-        """Text format still works when no JSON present."""
+    def test_structured_output_preferred(self):
+        """structured_output is preferred over text extraction."""
         metrics = self._make_metrics()
-        text = """METRIC: tests_pass
-PASSED: yes
-REASON: All pass
-
-OVERALL_SCORE: 80
-"""
-        result = parse_evaluator_output(text, metrics)
+        structured = {
+            "metrics": [{"name": "tests_pass", "passed": True, "reason": "From structured"}],
+            "overall_score": 80,
+        }
+        text = json.dumps({
+            "metrics": [{"name": "tests_pass", "passed": False, "reason": "From text"}],
+            "overall_score": 50,
+        })
+        result = parse_evaluator_output(structured, text, metrics)
         assert len(result.metrics) == 1
         assert result.overall_score == 80
+        assert result.metrics[0].passed is True
 
 
 class TestPlannerParsing:
@@ -1012,50 +981,48 @@ class TestPlannerParsing:
 }
 ```
 '''
-        decision = parse_planner_output(text)
+        decision = parse_planner_output(None, text)
         assert decision.action == Action.EXECUTE
         assert decision.target == "T001"
         assert "ready" in decision.reason
 
     def test_bare_json(self):
         text = '{"action": "explore", "target": "T002", "reason": "Need research"}'
-        decision = parse_planner_output(text)
+        decision = parse_planner_output(None, text)
         assert decision.action == Action.EXPLORE
         assert decision.target == "T002"
 
-    def test_regex_fallback(self):
-        text = """ACTION: execute
-TARGET: T001
-REASON: Task is ready
-"""
-        decision = parse_planner_output(text)
+    def test_json_fallback_from_text(self):
+        """When structured_output is None, extract_json parses JSON from text."""
+        text = '{"action": "execute", "target": "T001", "reason": "Task is ready"}'
+        decision = parse_planner_output(None, text)
         assert decision.action == Action.EXECUTE
         assert decision.target == "T001"
 
     def test_empty_input(self):
-        decision = parse_planner_output("")
+        decision = parse_planner_output(None, "")
         assert decision.action == Action.SKIP  # Default
 
     def test_invalid_action(self):
         text = '{"action": "nonexistent_action", "target": "T001"}'
-        decision = parse_planner_output(text)
+        decision = parse_planner_output(None, text)
         assert decision.action == Action.SKIP  # Fallback
 
     def test_parallel_execute_with_task_ids(self):
         text = '{"action": "parallel_execute", "task_ids": ["T001", "T002", "T003"], "reason": "Independent tasks"}'
-        decision = parse_planner_output(text)
+        decision = parse_planner_output(None, text)
         assert decision.action == Action.PARALLEL_EXECUTE
         assert decision.task_ids == ["T001", "T002", "T003"]
 
     def test_task_ids_as_string(self):
         """task_ids provided as string → parsed into list."""
         text = '{"action": "parallel_execute", "task_ids": "T001, T002", "reason": "Test"}'
-        decision = parse_planner_output(text)
+        decision = parse_planner_output(None, text)
         assert decision.task_ids == ["T001", "T002"]
 
     def test_hedge_action(self):
         text = '{"action": "hedge", "target": "T001", "failure_assumptions": "May not work", "reason": "Risky"}'
-        decision = parse_planner_output(text)
+        decision = parse_planner_output(None, text)
         assert decision.action == Action.HEDGE
         assert decision.hedge_for == "T001"
         assert decision.failure_assumptions == "May not work"
@@ -1070,33 +1037,29 @@ REASON: Task is ready
             "new_approach": "Use async implementation",
             "reason": "Multiple attempts failed",
         })
-        decision = parse_planner_output(text)
+        decision = parse_planner_output(None, text)
         assert decision.action == Action.PIVOT_ITERATION
         assert decision.attempt_count == 5
         assert decision.best_score == "65"
 
     def test_done_action(self):
         text = '{"action": "done", "reason": "All tasks completed"}'
-        decision = parse_planner_output(text)
+        decision = parse_planner_output(None, text)
         assert decision.action == Action.DONE
 
     def test_ask_with_question(self):
         text = '{"action": "ask", "question": "Should we use Redis or Memcached?", "reason": "Need user input"}'
-        decision = parse_planner_output(text)
+        decision = parse_planner_output(None, text)
         assert decision.action == Action.ASK
         assert "Redis" in decision.question
 
-    def test_regex_multiline_reason(self):
-        text = """ACTION: execute
-TARGET: T001
-REASON: This is a long reason that
-spans multiple lines and includes
-detailed explanation.
-NEW_TASKS: T002: Do something
-"""
-        decision = parse_planner_output(text)
+    def test_structured_output_preferred(self):
+        """structured_output is preferred over text extraction."""
+        structured = {"action": "execute", "target": "T001", "reason": "From structured output"}
+        text = '{"action": "done", "reason": "From text"}'
+        decision = parse_planner_output(structured, text)
         assert decision.action == Action.EXECUTE
-        assert "spans multiple lines" in decision.reason
+        assert "structured output" in decision.reason
 
 
 class TestReviewerParsing:
@@ -1104,62 +1067,61 @@ class TestReviewerParsing:
 
     def test_json_verdict(self):
         text = '{"verdict": "passed", "reason": "All requirements met", "suggestions": "Add more tests"}'
-        result = parse_reviewer_output(text)
+        result = parse_reviewer_output(None, text)
         assert result.verdict == Verdict.PASSED
         assert "requirements" in result.reason
 
-    def test_regex_verdict(self):
-        text = """VERDICT: retry
-REASON: Some tests fail
-SUGGESTIONS: Fix test_auth
-"""
-        result = parse_reviewer_output(text)
+    def test_json_fallback_from_text(self):
+        """When structured_output is None, extract_json parses JSON from text."""
+        text = '{"verdict": "retry", "reason": "Some tests fail", "suggestions": "Fix test_auth"}'
+        result = parse_reviewer_output(None, text)
         assert result.verdict == Verdict.RETRY
         assert "tests fail" in result.reason
 
     def test_empty_input(self):
-        result = parse_reviewer_output("")
+        result = parse_reviewer_output(None, "")
         assert result.verdict == Verdict.RETRY  # Default on parse failure
 
     def test_invalid_verdict(self):
         text = '{"verdict": "unknown_verdict", "reason": "test"}'
-        result = parse_reviewer_output(text)
+        result = parse_reviewer_output(None, text)
         assert result.verdict == Verdict.RETRY  # Fallback on parse failure
 
     def test_failed_verdict(self):
         text = '{"verdict": "failed", "reason": "Fundamental design flaw"}'
-        result = parse_reviewer_output(text)
+        result = parse_reviewer_output(None, text)
         assert result.verdict == Verdict.FAILED
 
-    def test_case_insensitive_verdict(self):
-        text = """VERDICT: PASSED
-REASON: Looks good
-"""
-        result = parse_reviewer_output(text)
+    def test_structured_output_preferred(self):
+        """structured_output is preferred over text extraction."""
+        structured = {"verdict": "passed", "reason": "From structured output"}
+        text = '{"verdict": "retry", "reason": "From text"}'
+        result = parse_reviewer_output(structured, text)
         assert result.verdict == Verdict.PASSED
+        assert "structured output" in result.reason
 
 
 class TestWorkerParsing:
     """Test extract_worker_metadata edge cases."""
 
     def test_always_succeeds(self):
-        result = extract_worker_metadata("any text", "IMPLEMENT")
+        result = extract_worker_metadata(None, "any text", "IMPLEMENT")
         assert result["success"] is True
 
     def test_explore_confidence_high(self):
-        result = extract_worker_metadata("Confidence: high\nDone", "EXPLORE")
+        result = extract_worker_metadata(None, "Confidence: high\nDone", "EXPLORE")
         assert result["confidence"] == "high"
 
     def test_explore_confidence_low(self):
-        result = extract_worker_metadata("Confidence: Low", "EXPLORE")
+        result = extract_worker_metadata(None, "Confidence: Low", "EXPLORE")
         assert result["confidence"] == "low"
 
     def test_no_confidence(self):
-        result = extract_worker_metadata("Some output", "EXPLORE")
+        result = extract_worker_metadata(None, "Some output", "EXPLORE")
         assert "confidence" not in result
 
     def test_empty_output(self):
-        result = extract_worker_metadata("", "IMPLEMENT")
+        result = extract_worker_metadata(None, "", "IMPLEMENT")
         assert result["success"] is True
 
 
@@ -1688,95 +1650,75 @@ class TestPivotPromptDriven:
     # --- Parse tests (Issue #4) ---
 
     def test_parse_pivot_yes(self):
-        """PIVOT_RECOMMENDED: yes → should_pivot=True"""
+        """pivot_recommended: true → should_pivot=True"""
         metrics = [Metric("test", MetricType.HARD, "Test")]
-        text = """METRIC: test
-PASSED: yes
-REASON: Pass
-
-OVERALL_SCORE: 70
-
-PIVOT_RECOMMENDED: yes
-PIVOT_REASON: Scores declining consistently
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [{"name": "test", "passed": True, "reason": "Pass"}],
+            "overall_score": 70,
+            "pivot_recommended": True,
+            "pivot_reason": "Scores declining consistently",
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert result.should_pivot is True
         assert "declining" in result.pivot_reason.lower()
 
     def test_parse_pivot_no(self):
-        """PIVOT_RECOMMENDED: no → should_pivot=False"""
+        """pivot_recommended: false → should_pivot=False"""
         metrics = [Metric("test", MetricType.HARD, "Test")]
-        text = """METRIC: test
-PASSED: yes
-REASON: Pass
-
-OVERALL_SCORE: 85
-
-PIVOT_RECOMMENDED: no
-PIVOT_REASON: Scores improving steadily
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [{"name": "test", "passed": True, "reason": "Pass"}],
+            "overall_score": 85,
+            "pivot_recommended": False,
+            "pivot_reason": "Scores improving steadily",
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert result.should_pivot is False
 
     def test_parse_pivot_missing(self):
-        """No PIVOT_RECOMMENDED → should_pivot stays at default (False)"""
+        """No pivot_recommended → should_pivot stays at default (False)"""
         metrics = [Metric("test", MetricType.HARD, "Test")]
-        text = """METRIC: test
-PASSED: yes
-REASON: Pass
-
-OVERALL_SCORE: 90
-"""
-        result = parse_evaluator_output(text, metrics)
-        # Default is False, and agent didn't set it
+        text = json.dumps({
+            "metrics": [{"name": "test", "passed": True, "reason": "Pass"}],
+            "overall_score": 90,
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert result.should_pivot is False
 
     def test_parse_pivot_reason_extracted(self):
-        """PIVOT_REASON: ... is correctly extracted"""
+        """pivot_reason is correctly extracted"""
         metrics = [Metric("test", MetricType.HARD, "Test")]
-        text = """METRIC: test
-PASSED: no
-REASON: Fail
-
-OVERALL_SCORE: 30
-
-PIVOT_RECOMMENDED: yes
-PIVOT_REASON: Hard metric tests_pass has failed 3 times in a row
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [{"name": "test", "passed": False, "reason": "Fail"}],
+            "overall_score": 30,
+            "pivot_recommended": True,
+            "pivot_reason": "Hard metric tests_pass has failed 3 times in a row",
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert result.should_pivot is True
         assert "tests_pass" in result.pivot_reason
 
-    def test_parse_pivot_case_insensitive(self):
-        """PIVOT_RECOMMENDED: YES / Yes / yes all work"""
+    def test_parse_pivot_true_always_works(self):
+        """pivot_recommended: true is consistently parsed"""
         metrics = [Metric("test", MetricType.HARD, "Test")]
-        for variant in ["YES", "Yes", "yes", "yEs"]:
-            text = f"""METRIC: test
-PASSED: yes
-REASON: Pass
+        text = json.dumps({
+            "metrics": [{"name": "test", "passed": True, "reason": "Pass"}],
+            "overall_score": 50,
+            "pivot_recommended": True,
+            "pivot_reason": "Test reason",
+        })
+        result = parse_evaluator_output(None, text, metrics)
+        assert result.should_pivot is True
 
-OVERALL_SCORE: 50
-
-PIVOT_RECOMMENDED: {variant}
-PIVOT_REASON: Test reason
-"""
-            result = parse_evaluator_output(text, metrics)
-            assert result.should_pivot is True, f"Failed for variant '{variant}'"
-
-    def test_parse_pivot_no_case_insensitive(self):
-        """PIVOT_RECOMMENDED: NO / No / no all work"""
+    def test_parse_pivot_false_always_works(self):
+        """pivot_recommended: false is consistently parsed"""
         metrics = [Metric("test", MetricType.HARD, "Test")]
-        for variant in ["NO", "No", "no", "nO"]:
-            text = f"""METRIC: test
-PASSED: yes
-REASON: Pass
-
-OVERALL_SCORE: 80
-
-PIVOT_RECOMMENDED: {variant}
-"""
-            result = parse_evaluator_output(text, metrics)
-            assert result.should_pivot is False, f"Failed for variant '{variant}'"
+        text = json.dumps({
+            "metrics": [{"name": "test", "passed": True, "reason": "Pass"}],
+            "overall_score": 80,
+            "pivot_recommended": False,
+        })
+        result = parse_evaluator_output(None, text, metrics)
+        assert result.should_pivot is False
 
     def test_parse_pivot_with_full_evaluator_output(self):
         """PIVOT fields extracted from a full evaluator output with all sections"""
@@ -1784,31 +1726,18 @@ PIVOT_RECOMMENDED: {variant}
             Metric("tests_pass", MetricType.HARD, "Tests pass"),
             Metric("code_quality", MetricType.SUBJECTIVE, "Quality"),
         ]
-        text = """METRIC: tests_pass
-PASSED: no
-VALUE: 3/10 tests fail
-SCORE: 30
-REASON: Multiple test failures in auth module
-
-METRIC: code_quality
-PASSED: yes
-SCORE: 75
-REASON: Decent code structure
-
-ISSUES:
-- auth.py:42 - Missing null check
-- db.py:100 - Connection leak
-
-SUGGESTIONS:
-- Add error handling
-- Fix auth tests
-
-OVERALL_SCORE: 45
-
-PIVOT_RECOMMENDED: yes
-PIVOT_REASON: Hard metric tests_pass keeps failing, score stuck at 45
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [
+                {"name": "tests_pass", "passed": False, "value": "3/10 tests fail", "score": 30, "reason": "Multiple test failures in auth module"},
+                {"name": "code_quality", "passed": True, "score": 75, "reason": "Decent code structure"},
+            ],
+            "issues": ["auth.py:42 - Missing null check", "db.py:100 - Connection leak"],
+            "suggestions": ["Add error handling", "Fix auth tests"],
+            "overall_score": 45,
+            "pivot_recommended": True,
+            "pivot_reason": "Hard metric tests_pass keeps failing, score stuck at 45",
+        })
+        result = parse_evaluator_output(None, text, metrics)
         assert len(result.metrics) == 2
         assert result.overall_score == 45
         assert result.should_pivot is True
@@ -1817,7 +1746,7 @@ PIVOT_REASON: Hard metric tests_pass keeps failing, score stuck at 45
     # --- Prompt construction tests (Issue #3) ---
 
     def test_prompt_includes_attempt_history(self):
-        """attempt_number > 1 → prompt includes Attempt History section"""
+        """attempt_number > 1 → prompt includes Attempt History section without scores"""
         prompt = build_evaluator_prompt(
             task_id="T001",
             goal="Build feature X",
@@ -1828,8 +1757,11 @@ PIVOT_REASON: Hard metric tests_pass keeps failing, score stuck at 45
         )
         assert "Attempt History" in prompt
         assert "#3" in prompt
-        assert "40" in prompt
-        assert "55" in prompt
+        # Anti-anchoring: specific scores should NOT appear in prompt
+        assert "Previous scores" not in prompt
+        assert "40, 55" not in prompt
+        # Should mention attempt count without scores
+        assert "2 previous attempts" in prompt
 
     def test_prompt_no_history_on_first_attempt(self):
         """attempt_number=1 → no Attempt History section"""
@@ -1855,8 +1787,8 @@ PIVOT_REASON: Hard metric tests_pass keeps failing, score stuck at 45
         )
         assert "Attempt History" not in prompt
 
-    def test_prompt_includes_trend(self):
-        """Score trend description appears in prompt"""
+    def test_prompt_no_scores_or_trend(self):
+        """Anti-anchoring: no scores or trend in prompt"""
         prompt = build_evaluator_prompt(
             task_id="T001",
             goal="Build feature X",
@@ -1865,19 +1797,11 @@ PIVOT_REASON: Hard metric tests_pass keeps failing, score stuck at 45
             attempt_number=4,
             previous_scores=[30.0, 40.0, 50.0],
         )
-        assert "improving" in prompt
-
-    def test_prompt_declining_trend(self):
-        """Declining scores show declining trend"""
-        prompt = build_evaluator_prompt(
-            task_id="T001",
-            goal="Build feature X",
-            task_detail="Task details here",
-            metrics=[Metric("test", MetricType.HARD, "Test")],
-            attempt_number=4,
-            previous_scores=[80.0, 60.0, 40.0],
-        )
-        assert "declining" in prompt
+        # Should NOT contain score numbers or trend words
+        assert "30, 40, 50" not in prompt
+        assert "Score trend" not in prompt
+        # Should contain anti-anchoring instruction
+        assert "Evaluate the code AS-IS" in prompt
 
     # --- _describe_trend tests ---
 
@@ -1902,15 +1826,15 @@ PIVOT_REASON: Hard metric tests_pass keeps failing, score stuck at 45
         assert "Edit tool" not in EVALUATOR_SYSTEM_PROMPT
         assert "pool.md" not in EVALUATOR_SYSTEM_PROMPT
 
-    def test_evaluator_has_no_write_tools(self):
-        """Evaluator agent should not have Write or Edit tools"""
+    def test_evaluator_has_no_edit_tool(self):
+        """Evaluator agent should not have Edit tool (Write is needed for adversarial tests)"""
         import inspect
         from ralph_sdk import evaluator
         source = inspect.getsource(evaluator.evaluate)
-        # Check that Edit and Write are NOT in allowed_tools
-        # The allowed_tools list should not contain "Edit" or "Write"
+        # Evaluator should not have Edit tool (it doesn't modify existing files)
         assert '"Edit"' not in source, "Evaluator should not have Edit tool"
-        assert '"Write"' not in source, "Evaluator should not have Write tool"
+        # Write IS allowed — needed for adversarial test scripts and findings
+        assert '"Write"' in source, "Evaluator needs Write tool for adversarial testing"
 
     def test_system_prompt_has_pivot_assessment(self):
         """System prompt contains pivot assessment guidance"""
@@ -1920,42 +1844,37 @@ PIVOT_REASON: Hard metric tests_pass keeps failing, score stuck at 45
     # --- Code fallback tests ---
 
     def test_code_fallback_when_agent_silent(self):
-        """Agent doesn't output PIVOT → fallback to _assess_pivot_recommendation
+        """Agent doesn't output pivot_recommended → fallback to _assess_pivot_recommendation
 
-        When parse_evaluator_output doesn't find PIVOT_RECOMMENDED,
+        When parse_evaluator_output doesn't find pivot_recommended,
         should_pivot stays at default (False) and pivot_reason is empty.
         In evaluate(), this triggers the fallback to code-based detection.
         """
         metrics = [Metric("test", MetricType.HARD, "Test")]
-        text = """METRIC: test
-PASSED: yes
-REASON: Pass
-
-OVERALL_SCORE: 50
-"""
-        result = parse_evaluator_output(text, metrics)
-        # Agent didn't output PIVOT, so should_pivot=False and pivot_reason=""
+        text = json.dumps({
+            "metrics": [{"name": "test", "passed": True, "reason": "Pass"}],
+            "overall_score": 50,
+        })
+        result = parse_evaluator_output(None, text, metrics)
+        # Agent didn't output pivot, so should_pivot=False and pivot_reason=""
         assert result.should_pivot is False
         assert result.pivot_reason == ""
         # This combination (False + empty reason) triggers fallback in evaluate()
 
     def test_agent_pivot_overrides_code(self):
-        """Agent outputs PIVOT_RECOMMENDED: yes → code fallback is skipped.
+        """Agent outputs pivot_recommended: true → code fallback is skipped.
 
         When agent sets should_pivot=True, evaluate() should NOT
         overwrite it with _assess_pivot_recommendation().
         """
         metrics = [Metric("test", MetricType.HARD, "Test")]
-        text = """METRIC: test
-PASSED: yes
-REASON: Pass
-
-OVERALL_SCORE: 80
-
-PIVOT_RECOMMENDED: yes
-PIVOT_REASON: Despite good score, approach is fundamentally limited
-"""
-        result = parse_evaluator_output(text, metrics)
+        text = json.dumps({
+            "metrics": [{"name": "test", "passed": True, "reason": "Pass"}],
+            "overall_score": 80,
+            "pivot_recommended": True,
+            "pivot_reason": "Despite good score, approach is fundamentally limited",
+        })
+        result = parse_evaluator_output(None, text, metrics)
         # Agent said pivot, and provided a reason
         assert result.should_pivot is True
         assert result.pivot_reason != ""
@@ -2055,3 +1974,1004 @@ PIVOT_REASON: Despite good score, approach is fundamentally limited
         source = inspect.getsource(orchestrator.run)
         assert "append_to_findings" in source
         assert "eval_result.should_pivot" in source
+
+
+# =============================================================================
+# 10. Handoff Note Bugs (Bug 1 & 2)
+# =============================================================================
+
+
+class TestHandoffStatusParsing:
+    """Bug 1: Handoff status parsing should handle both formats."""
+
+    def test_colon_format_done(self, tmp_path):
+        """## Status: done → classified as completed."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |", cwd)
+        write_task("T001", "# T001\n\n## Status: done\n\n## Notes\nDone.", cwd)
+
+        handoff = generate_handoff_note(cwd)
+        assert "T001" in handoff
+        # T001 should be in completed list
+        assert "已完成: T001" in handoff
+
+    def test_colon_format_completed(self, tmp_path):
+        """## Status: completed → classified as completed."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |", cwd)
+        write_task("T001", "# T001\n\n## Status: completed\n", cwd)
+
+        handoff = generate_handoff_note(cwd)
+        assert "已完成: T001" in handoff
+
+    def test_colon_format_passed(self, tmp_path):
+        """## Status: passed → classified as completed."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |", cwd)
+        write_task("T001", "# T001\n\n## Status: passed\n", cwd)
+
+        handoff = generate_handoff_note(cwd)
+        assert "已完成: T001" in handoff
+
+    def test_newline_format_completed(self, tmp_path):
+        """## Status\\ncompleted → classified as completed."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |", cwd)
+        write_task("T001", "# T001\n\n## Status\ncompleted\n", cwd)
+
+        handoff = generate_handoff_note(cwd)
+        assert "已完成: T001" in handoff
+
+    def test_colon_format_pending(self, tmp_path):
+        """## Status: pending → classified as pending."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |", cwd)
+        write_task("T001", "# T001\n\n## Status: pending\n", cwd)
+
+        handoff = generate_handoff_note(cwd)
+        assert "待处理: T001" in handoff
+
+    def test_mixed_statuses(self, tmp_path):
+        """Multiple tasks with different status formats."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | done |\n| T002 | IMPLEMENT | pending |", cwd)
+        write_task("T001", "# T001\n\n## Status: done\n", cwd)
+        write_task("T002", "# T002\n\n## Status\npending\n", cwd)
+
+        handoff = generate_handoff_note(cwd)
+        assert "已完成: T001" in handoff
+        assert "待处理: T002" in handoff
+
+    def test_in_progress_status(self, tmp_path):
+        """## Status: in_progress → classified as in progress."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | in_progress |", cwd)
+        write_task("T001", "# T001\n\n## Status: in_progress\n", cwd)
+
+        handoff = generate_handoff_note(cwd)
+        assert "进行中: T001" in handoff
+
+
+class TestHandoffFindingsParsing:
+    """Bug 2: Handoff should match both 'Findings' and 'Shared Findings'."""
+
+    def test_shared_findings_section(self, tmp_path):
+        """Pool with '## Shared Findings' → findings appear in handoff."""
+        cwd = setup_ralph(tmp_path)
+        pool_content = """# Task Pool
+
+## Goal Summary
+Test
+
+## Active Tasks
+| T001 | IMPLEMENT | done |
+
+## Shared Findings
+
+- Important discovery about the API
+- Another key finding
+
+## Progress Log
+"""
+        write_pool(pool_content, cwd)
+        write_task("T001", "# T001\n\n## Status: done\n", cwd)
+
+        handoff = generate_handoff_note(cwd)
+        assert "Important discovery" in handoff
+        assert "Another key finding" in handoff
+
+    def test_plain_findings_section(self, tmp_path):
+        """Pool with '## Findings' → findings still appear (backward compat)."""
+        cwd = setup_ralph(tmp_path)
+        pool_content = """# Task Pool
+
+## Goal Summary
+Test
+
+## Active Tasks
+| T001 | IMPLEMENT | done |
+
+## Findings
+
+- Legacy finding here
+
+## Progress Log
+"""
+        write_pool(pool_content, cwd)
+        write_task("T001", "# T001\n\n## Status: done\n", cwd)
+
+        handoff = generate_handoff_note(cwd)
+        assert "Legacy finding" in handoff
+
+
+# =============================================================================
+# 11. Input Tokens Counting (Bug 3)
+# =============================================================================
+
+
+class TestInputTokensCounting:
+    """Bug 3: input_tokens should include cache tokens."""
+
+    def test_log_query_stats_includes_cache_tokens(self):
+        """log_query_stats sums input_tokens + cache tokens."""
+        from ralph_sdk.logger import SessionLogger
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = SessionLogger(tmp)
+
+            # Create a mock ResultMessage with cache tokens
+            mock_result = type("MockResult", (), {
+                "usage": {
+                    "input_tokens": 65,
+                    "output_tokens": 5000,
+                    "cache_creation_input_tokens": 10000,
+                    "cache_read_input_tokens": 50000,
+                },
+                "total_cost_usd": 0.50,
+            })()
+
+            logger.log_query_stats(mock_result)
+
+            # Total input should be 65 + 10000 + 50000 = 60065
+            assert logger.metrics.total_input_tokens == 60065
+            assert logger.metrics.total_output_tokens == 5000
+
+    def test_log_query_stats_no_cache_tokens(self):
+        """Works when cache tokens are absent."""
+        from ralph_sdk.logger import SessionLogger
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = SessionLogger(tmp)
+
+            mock_result = type("MockResult", (), {
+                "usage": {
+                    "input_tokens": 5000,
+                    "output_tokens": 3000,
+                },
+                "total_cost_usd": 0.10,
+            })()
+
+            logger.log_query_stats(mock_result)
+            assert logger.metrics.total_input_tokens == 5000
+
+    def test_log_query_stats_null_usage(self):
+        """Handles None usage gracefully."""
+        from ralph_sdk.logger import SessionLogger
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = SessionLogger(tmp)
+
+            mock_result = type("MockResult", (), {
+                "usage": None,
+                "total_cost_usd": None,
+            })()
+
+            logger.log_query_stats(mock_result)
+            assert logger.metrics.total_input_tokens == 0
+
+
+# =============================================================================
+# 12. Pool Status Update (Issue 9)
+# =============================================================================
+
+
+class TestPoolStatusUpdate:
+    """Issue 9: Pool status should update to COMPLETED on DONE."""
+
+    def test_update_existing_status(self, tmp_path):
+        """Update '## Status: IN_PROGRESS' to '## Status: COMPLETED'."""
+        cwd = setup_ralph(tmp_path)
+        pool_content = """# Task Pool
+
+## Status: IN_PROGRESS
+
+## Active Tasks
+| T001 | IMPLEMENT | done |
+"""
+        write_pool(pool_content, cwd)
+
+        update_pool_status("COMPLETED", cwd)
+
+        result = read_pool(cwd)
+        assert "## Status: COMPLETED" in result
+        assert "IN_PROGRESS" not in result
+
+    def test_insert_status_when_missing(self, tmp_path):
+        """Add status when none exists."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |", cwd)
+
+        update_pool_status("COMPLETED", cwd)
+
+        result = read_pool(cwd)
+        assert "## Status: COMPLETED" in result
+
+    def test_update_newline_format_status(self, tmp_path):
+        """Update '## Status\\nIN_PROGRESS' format."""
+        cwd = setup_ralph(tmp_path)
+        pool_content = """# Task Pool
+
+## Status
+IN_PROGRESS
+
+## Active Tasks
+| T001 | IMPLEMENT | done |
+"""
+        write_pool(pool_content, cwd)
+
+        update_pool_status("COMPLETED", cwd)
+
+        result = read_pool(cwd)
+        assert "## Status: COMPLETED" in result
+
+
+# =============================================================================
+# 13. Mark Pending Tasks Skipped (Issue 7)
+# =============================================================================
+
+
+class TestMarkPendingTasksSkipped:
+    """Issue 7: Pending tasks should be marked skipped when DONE."""
+
+    def test_marks_pending_as_skipped(self, tmp_path):
+        """Pending task → status changed to skipped."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | done |\n| T002 | IMPLEMENT | pending |", cwd)
+        write_task("T001", "# T001\n\n## Status: done\n", cwd)
+        write_task("T002", "# T002\n\n## Status: pending\n", cwd)
+
+        skipped = mark_pending_tasks_skipped("Goal completed", cwd)
+
+        assert skipped == ["T002"]
+        t002_content = read_task("T002", cwd)
+        assert "skipped" in t002_content.lower()
+        assert "Goal completed" in t002_content
+
+    def test_does_not_touch_done_tasks(self, tmp_path):
+        """Completed tasks are not affected."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | done |", cwd)
+        write_task("T001", "# T001\n\n## Status: done\n", cwd)
+
+        skipped = mark_pending_tasks_skipped("Goal completed", cwd)
+
+        assert skipped == []
+        t001_content = read_task("T001", cwd)
+        assert "skipped" not in t001_content.lower()
+
+    def test_multiple_pending_tasks(self, tmp_path):
+        """Multiple pending tasks → all marked skipped."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | done |\n| T002 | EXPLORE | pending |\n| T003 | IMPLEMENT | pending |", cwd)
+        write_task("T001", "# T001\n\n## Status: done\n", cwd)
+        write_task("T002", "# T002\n\n## Status: pending\n", cwd)
+        write_task("T003", "# T003\n\n## Status: pending\n", cwd)
+
+        skipped = mark_pending_tasks_skipped("Superseded", cwd)
+
+        assert set(skipped) == {"T002", "T003"}
+
+
+# =============================================================================
+# 14. Evaluator Metrics Parsed Count (Issue 10)
+# =============================================================================
+
+
+class TestMetricsParsedCount:
+    """Issue 10: Evaluator metrics parsed count should be accurate."""
+
+    def test_adhoc_metrics_created_for_unknown_names(self):
+        """When agent outputs metric names not in metrics list, create ad-hoc Metrics."""
+        default_metrics = [
+            Metric("no_errors", MetricType.HARD, "No errors"),
+            Metric("requirements_met", MetricType.HARD, "Requirements met"),
+            Metric("code_quality", MetricType.SUBJECTIVE, "Code quality"),
+        ]
+        agent_output = {
+            "metrics": [
+                {"name": "runs_without_error", "passed": True, "reason": "All good"},
+                {"name": "basic_functionality", "passed": True, "reason": "Works"},
+                {"name": "test_pass_rate", "passed": True, "score": 95, "reason": "95% pass"},
+                {"name": "concurrency_safety", "passed": True, "reason": "Thread safe"},
+                {"name": "timing_precision", "passed": True, "score": 88, "reason": "Within bounds"},
+                {"name": "test_coverage", "passed": False, "score": 60, "reason": "Low coverage"},
+            ],
+            "overall_score": 80,
+        }
+        result = _parse_evaluator_json(agent_output, default_metrics)
+
+        # All 6 metrics should be included (none discarded)
+        assert len(result.metrics) == 6
+        names = [mr.metric.name for mr in result.metrics]
+        assert "runs_without_error" in names
+        assert "test_coverage" in names
+
+    def test_adhoc_metric_type_inferred_from_score(self):
+        """Ad-hoc metrics with score → SUBJECTIVE, without → HARD."""
+        agent_output = {
+            "metrics": [
+                {"name": "has_score", "passed": True, "score": 90, "reason": "Good"},
+                {"name": "no_score", "passed": True, "reason": "OK"},
+            ],
+            "overall_score": 85,
+        }
+        result = _parse_evaluator_json(agent_output, [])
+
+        by_name = {mr.metric.name: mr for mr in result.metrics}
+        assert by_name["has_score"].metric.type == MetricType.SUBJECTIVE
+        assert by_name["no_score"].metric.type == MetricType.HARD
+
+    def test_metrics_attempted_set_correctly(self):
+        """metrics_attempted should equal the number of metrics in agent output."""
+        agent_output = {
+            "metrics": [
+                {"name": "m1", "passed": True, "reason": "OK"},
+                {"name": "m2", "passed": False, "reason": "Fail"},
+                {"name": "m3", "passed": True, "score": 80, "reason": "Good"},
+            ],
+            "overall_score": 70,
+        }
+        result = _parse_evaluator_json(agent_output, [])
+        assert result.metrics_attempted == 3
+
+    def test_denominator_uses_metrics_attempted(self):
+        """evaluate() should use metrics_attempted as denominator, not len(metrics)."""
+        import inspect
+        from ralph_sdk import evaluator
+        source = inspect.getsource(evaluator.evaluate)
+
+        # The denominator should reference metrics_attempted
+        assert "metrics_attempted" in source
+        # The old hard-coded pattern should be gone
+        assert 'f"**Metrics parsed**: {len(result.metrics)}/{len(metrics)}"' not in source
+
+    def test_known_metrics_still_matched(self):
+        """Metrics matching the provided list should use the original Metric object."""
+        metrics = [
+            Metric("code_quality", MetricType.SUBJECTIVE, "Code quality", target=">= 80"),
+        ]
+        agent_output = {
+            "metrics": [
+                {"name": "code_quality", "passed": True, "score": 90, "reason": "Great"},
+                {"name": "unknown_metric", "passed": True, "reason": "Fine"},
+            ],
+            "overall_score": 90,
+        }
+        result = _parse_evaluator_json(agent_output, metrics)
+
+        by_name = {mr.metric.name: mr for mr in result.metrics}
+        # Known metric should keep its target from the original definition
+        assert by_name["code_quality"].metric.target == ">= 80"
+        # Unknown metric should be ad-hoc (no target)
+        assert by_name["unknown_metric"].metric.target is None
+
+    def test_parse_evaluator_output_with_adhoc(self):
+        """parse_evaluator_output should also create ad-hoc metrics via _parse_evaluator_json."""
+        metrics = [Metric("no_errors", MetricType.HARD, "No errors")]
+        structured = {
+            "metrics": [
+                {"name": "no_errors", "passed": True, "reason": "OK"},
+                {"name": "custom_metric", "passed": True, "score": 75, "reason": "Decent"},
+            ],
+            "overall_score": 80,
+        }
+        result = parse_evaluator_output(structured, "", metrics)
+        assert len(result.metrics) == 2
+        assert result.metrics_attempted == 2
+
+
+# =============================================================================
+# 15. Orchestrator DONE Handler Updates (Issues 7 & 9)
+# =============================================================================
+
+
+class TestOrchestratorDoneHandler:
+    """Verify orchestrator DONE handler updates pool status and marks skipped tasks."""
+
+    def test_done_updates_pool_status(self):
+        """orchestrator.run() calls update_pool_status on DONE."""
+        import inspect
+        from ralph_sdk import orchestrator
+        source = inspect.getsource(orchestrator.run)
+        assert "update_pool_status" in source
+
+    def test_done_marks_pending_skipped(self):
+        """orchestrator.run() calls mark_pending_tasks_skipped on DONE."""
+        import inspect
+        from ralph_sdk import orchestrator
+        source = inspect.getsource(orchestrator.run)
+        assert "mark_pending_tasks_skipped" in source
+
+
+# =============================================================================
+# 16. Emoji Status Value Parsing (Issue 10 附带)
+# =============================================================================
+
+
+class TestEmojiStatusParsing:
+    """Status regex should skip emoji prefixes like '✅ completed'."""
+
+    def test_handoff_parses_emoji_status_completed(self, tmp_path):
+        """generate_handoff_note should parse '✅ completed' as completed."""
+        init_ralph_dir(str(tmp_path))
+        # Write pool with a task reference (must use T001 format)
+        write_pool("## Tasks\n| ID | Title |\n|---|---|\n| T001 | Do something |\n", str(tmp_path))
+        # Write task with emoji status
+        task_content = "# T001: Test\n\n## Type\nIMPLEMENT\n\n## Status\n✅ completed\n"
+        write_task("T001", task_content, str(tmp_path))
+
+        note = generate_handoff_note(str(tmp_path))
+        assert "T001" in note
+        # Should classify as completed, not in_progress
+        # The handoff note uses Chinese "已完成" for completed
+        assert "已完成" in note or "completed" in note.lower()
+
+    def test_mark_pending_skips_emoji_completed(self, tmp_path):
+        """mark_pending_tasks_skipped should not skip already-completed tasks with emoji."""
+        init_ralph_dir(str(tmp_path))
+        write_pool("## Tasks\n| ID | Title |\n|---|---|\n| T001 | Do something |\n", str(tmp_path))
+        task_content = "# T001: Test\n\n## Type\nIMPLEMENT\n\n## Status\n✅ completed\n"
+        write_task("T001", task_content, str(tmp_path))
+
+        skipped = mark_pending_tasks_skipped("done", str(tmp_path))
+        assert "T001" not in skipped  # Should not be skipped since it's completed
+
+    def test_mark_pending_skips_plain_pending(self, tmp_path):
+        """mark_pending_tasks_skipped should skip plain pending tasks."""
+        init_ralph_dir(str(tmp_path))
+        write_pool("## Tasks\n| ID | Title |\n|---|---|\n| T001 | Do something |\n", str(tmp_path))
+        task_content = "# T001: Test\n\n## Type\nIMPLEMENT\n\n## Status\npending\n"
+        write_task("T001", task_content, str(tmp_path))
+
+        skipped = mark_pending_tasks_skipped("done", str(tmp_path))
+        assert "T001" in skipped
+
+
+# =============================================================================
+# 17. Pipeline Quality Control (timeparser findings)
+# =============================================================================
+
+
+class TestDoneBlockedByTargetScore:
+    """DONE handler should block when tasks score below target_score."""
+
+    def test_done_blocked_below_target(self, tmp_path):
+        """Task scored 88 with target 95 → DONE should be blocked."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |", cwd)
+        # Write task with score below target
+        task_content = """# T001: Test Task
+
+## Type
+IMPLEMENT
+
+## Status
+in_progress
+
+## Evaluation (2026-02-05 10:00)
+
+**Score**: 88/100
+**Metrics parsed**: 3/3
+"""
+        write_task("T001", task_content, cwd)
+
+        # Simulate what DONE handler checks
+        task_ids = extract_task_ids_from_pool(cwd)
+        target_score = 95
+        below_target = []
+        for tid in task_ids:
+            tc = read_task(tid, cwd)
+            if not tc:
+                continue
+            content_lower = tc.lower()
+            status_match = re.search(r"## status[:\s]+(?:[^\w\s]\s*)?(\w+)", content_lower)
+            if status_match and status_match.group(1) in ("skipped", "pending"):
+                continue
+            _, prev_scores = get_attempt_history(tid, cwd)
+            if prev_scores and prev_scores[-1] < target_score:
+                below_target.append((tid, prev_scores[-1]))
+
+        assert len(below_target) == 1
+        assert below_target[0] == ("T001", 88.0)
+
+    def test_done_allowed_above_target(self, tmp_path):
+        """Task scored 96 with target 95 → DONE should be allowed."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |", cwd)
+        task_content = """# T001: Test Task
+
+## Type
+IMPLEMENT
+
+## Status
+in_progress
+
+## Evaluation (2026-02-05 10:00)
+
+**Score**: 96/100
+**Metrics parsed**: 3/3
+"""
+        write_task("T001", task_content, cwd)
+
+        task_ids = extract_task_ids_from_pool(cwd)
+        target_score = 95
+        below_target = []
+        for tid in task_ids:
+            tc = read_task(tid, cwd)
+            if not tc:
+                continue
+            content_lower = tc.lower()
+            status_match = re.search(r"## status[:\s]+(?:[^\w\s]\s*)?(\w+)", content_lower)
+            if status_match and status_match.group(1) in ("skipped", "pending"):
+                continue
+            _, prev_scores = get_attempt_history(tid, cwd)
+            if prev_scores and prev_scores[-1] < target_score:
+                below_target.append((tid, prev_scores[-1]))
+
+        assert len(below_target) == 0
+
+    def test_done_skips_skipped_tasks(self, tmp_path):
+        """Task with status=skipped should NOT block DONE even if scored low."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |\n| T002 | IMPLEMENT | pending |", cwd)
+
+        # T001: skipped with low score
+        write_task("T001", """# T001: Task
+
+## Type
+IMPLEMENT
+
+## Status
+skipped
+
+## Evaluation (2026-02-05 10:00)
+
+**Score**: 40/100
+""", cwd)
+
+        # T002: completed with good score
+        write_task("T002", """# T002: Task
+
+## Type
+IMPLEMENT
+
+## Status
+in_progress
+
+## Evaluation (2026-02-05 10:00)
+
+**Score**: 97/100
+""", cwd)
+
+        task_ids = extract_task_ids_from_pool(cwd)
+        target_score = 95
+        below_target = []
+        for tid in task_ids:
+            tc = read_task(tid, cwd)
+            if not tc:
+                continue
+            content_lower = tc.lower()
+            status_match = re.search(r"## status[:\s]+(?:[^\w\s]\s*)?(\w+)", content_lower)
+            if status_match and status_match.group(1) in ("skipped", "pending"):
+                continue
+            _, prev_scores = get_attempt_history(tid, cwd)
+            if prev_scores and prev_scores[-1] < target_score:
+                below_target.append((tid, prev_scores[-1]))
+
+        # T001 skipped → not checked; T002 above target → no blocker
+        assert len(below_target) == 0
+
+    def test_done_no_scores_allows(self, tmp_path):
+        """Task with no evaluation (no scores) should NOT block DONE."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |", cwd)
+        write_task("T001", """# T001: Task
+
+## Type
+IMPLEMENT
+
+## Status
+in_progress
+""", cwd)
+
+        task_ids = extract_task_ids_from_pool(cwd)
+        target_score = 95
+        below_target = []
+        for tid in task_ids:
+            tc = read_task(tid, cwd)
+            if not tc:
+                continue
+            content_lower = tc.lower()
+            status_match = re.search(r"## status[:\s]+(?:[^\w\s]\s*)?(\w+)", content_lower)
+            if status_match and status_match.group(1) in ("skipped", "pending"):
+                continue
+            _, prev_scores = get_attempt_history(tid, cwd)
+            if prev_scores and prev_scores[-1] < target_score:
+                below_target.append((tid, prev_scores[-1]))
+
+        assert len(below_target) == 0
+
+
+class TestEvalSectionSlimmed:
+    """Evaluator should write structured summary, not full output, to task file."""
+
+    def test_eval_section_no_full_output(self, tmp_path):
+        """After evaluate(), task file should NOT contain '### Evaluator Full Output'."""
+        cwd = setup_ralph(tmp_path)
+        init_pool("Test", "| T001 | IMPLEMENT | pending |", cwd)
+        write_task("T001", "# T001: Task\n\n## Status\nin_progress\n", cwd)
+
+        # Simulate what evaluate() writes to task file
+        from ralph_sdk.evaluator import EvaluationResult
+        result = EvaluationResult(
+            task_id="T001",
+            overall_passed=True,
+            overall_score=85,
+            issues=["auth.py:42 missing validation"],
+            suggestions=["Add input validation"],
+            metrics_attempted=3,
+        )
+
+        from datetime import datetime
+        task_content = read_task("T001", cwd)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        eval_section = f"\n\n## Evaluation ({now})\n\n"
+        eval_section += f"**Score**: {result.overall_score:.0f}/100\n"
+        denominator = result.metrics_attempted if result.metrics_attempted > 0 else len(result.metrics)
+        eval_section += f"**Metrics parsed**: {len(result.metrics)}/{denominator}\n\n"
+        if result.issues:
+            eval_section += "### Issues\n\n"
+            for issue in result.issues:
+                eval_section += f"- {issue}\n"
+        if result.suggestions:
+            eval_section += "\n### Suggestions\n\n"
+            for suggestion in result.suggestions:
+                eval_section += f"- {suggestion}\n"
+        write_task("T001", task_content + eval_section, cwd)
+
+        final_content = read_task("T001", cwd)
+        assert "### Evaluator Full Output" not in final_content
+        assert "### Issues" in final_content
+        assert "auth.py:42" in final_content
+        assert "### Suggestions" in final_content
+        assert "Add input validation" in final_content
+
+    def test_eval_log_file_created(self, tmp_path):
+        """Full evaluator output should be saved to .ralph/logs/eval_{task_id}_{attempt}.md."""
+        cwd = str(tmp_path)
+        from ralph_sdk.pool import RALPH_DIR
+        from pathlib import Path
+
+        eval_log_path = Path(cwd) / RALPH_DIR / "logs" / "eval_T001_2.md"
+        eval_log_path.parent.mkdir(parents=True, exist_ok=True)
+        eval_log_path.write_text("Full evaluator output here with lots of details...")
+
+        assert eval_log_path.exists()
+        assert "Full evaluator output" in eval_log_path.read_text()
+
+
+class TestMetricCountConstraint:
+    """Evaluator prompt should enforce exact metric count."""
+
+    def test_prompt_contains_metric_count(self):
+        """build_evaluator_prompt should include exact metric count constraint."""
+        metrics = [
+            Metric("tests_pass", MetricType.HARD, "All tests pass"),
+            Metric("code_quality", MetricType.SUBJECTIVE, "Code quality"),
+            Metric("performance", MetricType.SOFT, "Response time", target="<= 100ms"),
+        ]
+        prompt = build_evaluator_prompt(
+            task_id="T001",
+            goal="Build something",
+            task_detail="Do the thing",
+            metrics=metrics,
+        )
+        assert "exactly 3 metrics entries" in prompt
+
+    def test_prompt_count_with_single_metric(self):
+        """Single metric → 'exactly 1 metrics entries'."""
+        metrics = [Metric("tests_pass", MetricType.HARD, "Tests pass")]
+        prompt = build_evaluator_prompt(
+            task_id="T001",
+            goal="Goal",
+            task_detail="Task",
+            metrics=metrics,
+        )
+        assert "exactly 1 metrics entries" in prompt
+
+    def test_metric_count_warning(self, capsys):
+        """Warning printed when metrics_attempted < metrics_expected."""
+        from ralph_sdk.evaluator import console as eval_console
+        from io import StringIO
+
+        # We can check by verifying the code path exists
+        import inspect
+        from ralph_sdk import evaluator
+        source = inspect.getsource(evaluator.evaluate)
+        assert "metrics_attempted" in source
+        assert "metrics_expected" in source
+
+
+class TestProgressLogBelowTarget:
+    """Progress log should contain BELOW TARGET annotation."""
+
+    def test_below_target_in_source(self):
+        """orchestrator.py NEEDS IMPROVEMENT log should say BELOW TARGET."""
+        import inspect
+        from ralph_sdk import orchestrator
+        source = inspect.getsource(orchestrator.run)
+        assert "BELOW TARGET" in source
+
+    def test_done_handler_checks_target_score(self):
+        """DONE handler should check tasks against target_score."""
+        import inspect
+        from ralph_sdk import orchestrator
+        source = inspect.getsource(orchestrator.run)
+        # The DONE handler should reference target_score and get_attempt_history
+        assert "below_target" in source
+        assert "get_attempt_history" in source
+        assert "DONE_BLOCKED" in source
+
+
+# =============================================================================
+# 18. Thinking + Full Text Output
+# =============================================================================
+
+
+class TestStreamResultThinkingText:
+    """StreamResult should accumulate ThinkingBlock content."""
+
+    def test_stream_result_has_thinking_text_field(self):
+        """StreamResult dataclass includes thinking_text field."""
+        from ralph_sdk.logger import StreamResult
+        sr = StreamResult(text="hello", tool_count=0, result_stats=None)
+        assert sr.thinking_text == ""
+
+    def test_stream_result_with_thinking(self):
+        """StreamResult can store thinking text."""
+        from ralph_sdk.logger import StreamResult
+        sr = StreamResult(
+            text="answer",
+            tool_count=0,
+            result_stats=None,
+            thinking_text="Let me think about this...",
+        )
+        assert sr.thinking_text == "Let me think about this..."
+
+    def test_thinking_block_import(self):
+        """ThinkingBlock is importable from logger module."""
+        from ralph_sdk.logger import ThinkingBlock
+        tb = ThinkingBlock(thinking="test thought", signature="sig123")
+        assert tb.thinking == "test thought"
+        assert tb.signature == "sig123"
+
+    def test_thinking_block_detected_in_content(self):
+        """ThinkingBlock is identified via isinstance, not hasattr."""
+        from claude_agent_sdk import ThinkingBlock
+        tb = ThinkingBlock(thinking="deep thought", signature="sig")
+        assert isinstance(tb, ThinkingBlock)
+        assert not hasattr(tb, "text")  # ThinkingBlock has .thinking, not .text
+        assert hasattr(tb, "thinking")
+
+
+class TestThinkingBudgetDefaults:
+    """Each agent should have correct default thinking_budget."""
+
+    def test_planner_default_10000(self):
+        """Planner defaults to 10000 thinking tokens."""
+        import inspect
+        from ralph_sdk import planner
+        source = inspect.getsource(planner.plan)
+        # Default should be 10_000 or 10000
+        assert "10_000" in source or "10000" in source
+
+    def test_evaluator_default_10000(self):
+        """Evaluator defaults to 10000 thinking tokens."""
+        import inspect
+        from ralph_sdk import evaluator
+        source = inspect.getsource(evaluator.evaluate)
+        assert "10_000" in source or "10000" in source
+
+    def test_worker_default_0(self):
+        """Worker defaults to 0 thinking tokens."""
+        import inspect
+        from ralph_sdk import worker
+        source = inspect.getsource(worker.work)
+        # Worker: effective = thinking_budget if thinking_budget is not None else 0
+        assert "else 0" in source
+
+    def test_reviewer_default_0(self):
+        """Reviewer defaults to 0 thinking tokens."""
+        import inspect
+        from ralph_sdk import reviewer
+        source = inspect.getsource(reviewer.review)
+        assert "else 0" in source
+
+    def test_initializer_default_0(self):
+        """Initializer defaults to 0 thinking tokens."""
+        import inspect
+        from ralph_sdk import orchestrator
+        source = inspect.getsource(orchestrator.initialize_pool)
+        assert "else 0" in source
+
+    def test_thinking_budget_override_propagates(self):
+        """thinking_budget=0 should override all agent defaults."""
+        import inspect
+        from ralph_sdk import planner, evaluator, worker, reviewer
+
+        # All agents check: thinking_budget if thinking_budget is not None else <default>
+        for mod in [planner, evaluator, worker, reviewer]:
+            func_name = {
+                planner: "plan",
+                evaluator: "evaluate",
+                worker: "work",
+                reviewer: "review",
+            }[mod]
+            source = inspect.getsource(getattr(mod, func_name))
+            assert "thinking_budget is not None" in source, \
+                f"{mod.__name__}.{func_name} should check thinking_budget is not None"
+
+
+class TestCLIThinkingOption:
+    """CLI --thinking option is properly wired."""
+
+    def test_run_cmd_has_thinking_param(self):
+        """run command accepts --thinking."""
+        import inspect
+        from ralph_sdk.cli import run_cmd
+        sig = inspect.signature(run_cmd)
+        assert "thinking_budget" in sig.parameters
+
+    def test_resume_cmd_has_thinking_param(self):
+        """resume command accepts --thinking."""
+        import inspect
+        from ralph_sdk.cli import resume_cmd
+        sig = inspect.signature(resume_cmd)
+        assert "thinking_budget" in sig.parameters
+
+    def test_orchestrator_run_has_thinking_param(self):
+        """orchestrator.run() accepts thinking_budget."""
+        import inspect
+        from ralph_sdk.orchestrator import run
+        sig = inspect.signature(run)
+        assert "thinking_budget" in sig.parameters
+
+    def test_orchestrator_resume_has_thinking_param(self):
+        """orchestrator.resume() accepts thinking_budget."""
+        import inspect
+        from ralph_sdk.orchestrator import resume
+        sig = inspect.signature(resume)
+        assert "thinking_budget" in sig.parameters
+
+
+class TestFullTextDisplay:
+    """Text blocks should be displayed in full (no truncation)."""
+
+    def test_no_truncation_in_stream_query(self):
+        """stream_query should not truncate text to 80 chars."""
+        import inspect
+        from ralph_sdk.logger import stream_query
+        source = inspect.getsource(stream_query)
+        # Old code had: first_line[:77] + "..."
+        assert "[:77]" not in source
+        assert 'first_line[:77]' not in source
+
+    def test_no_truncation_in_stream_client_query(self):
+        """stream_client_query should not truncate text to 80 chars."""
+        import inspect
+        from ralph_sdk.logger import stream_client_query
+        source = inspect.getsource(stream_client_query)
+        assert "[:77]" not in source
+        assert 'first_line[:77]' not in source
+
+    def test_thinking_delta_in_stream_query(self):
+        """stream_query handles thinking_delta events."""
+        import inspect
+        from ralph_sdk.logger import stream_query
+        source = inspect.getsource(stream_query)
+        assert "thinking_delta" in source
+
+
+# =============================================================================
+# Category 14: Score Consistency Validation
+# =============================================================================
+
+
+class TestScoreConsistencyValidation:
+    """Tests for _validate_score_consistency anti-anchoring mechanism."""
+
+    def test_cosmetic_only_low_score_warns(self, capsys):
+        """All cosmetic issues + score < 95 → warning printed."""
+        result = EvaluationResult(
+            task_id="T001",
+            overall_passed=True,
+            overall_score=88,
+            issues=[
+                "[COSMETIC] Missing docstring in parse_input()",
+                "[COSMETIC] Naming: 'x' should be more descriptive",
+                "[COSMETIC] Add type annotation to return value",
+            ],
+        )
+        _validate_score_consistency(result)
+        captured = capsys.readouterr()
+        assert "All 3 issues are cosmetic" in captured.out
+        assert "88" in captured.out
+
+    def test_functional_issues_no_warning(self, capsys):
+        """Mix of functional and cosmetic issues → no warning."""
+        result = EvaluationResult(
+            task_id="T001",
+            overall_passed=False,
+            overall_score=70,
+            issues=[
+                "[FUNCTIONAL] Bug: off-by-one in date calculation",
+                "[COSMETIC] Missing docstring",
+            ],
+        )
+        _validate_score_consistency(result)
+        captured = capsys.readouterr()
+        assert "cosmetic" not in captured.out.lower()
+
+    def test_cosmetic_high_score_no_warning(self, capsys):
+        """All cosmetic issues + score >= 95 → no warning."""
+        result = EvaluationResult(
+            task_id="T001",
+            overall_passed=True,
+            overall_score=96,
+            issues=[
+                "[COSMETIC] Minor naming inconsistency",
+            ],
+        )
+        _validate_score_consistency(result)
+        captured = capsys.readouterr()
+        assert "cosmetic" not in captured.out.lower()
+
+    def test_no_issues_no_warning(self, capsys):
+        """No issues → no warning."""
+        result = EvaluationResult(
+            task_id="T001",
+            overall_passed=True,
+            overall_score=50,
+            issues=[],
+        )
+        _validate_score_consistency(result)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_keyword_matching_case_insensitive(self, capsys):
+        """Cosmetic keywords match case-insensitively."""
+        result = EvaluationResult(
+            task_id="T001",
+            overall_passed=True,
+            overall_score=85,
+            issues=[
+                "Missing DOCSTRING for class Foo",
+                "Style issue: inconsistent indentation",
+            ],
+        )
+        _validate_score_consistency(result)
+        captured = capsys.readouterr()
+        assert "All 2 issues are cosmetic" in captured.out

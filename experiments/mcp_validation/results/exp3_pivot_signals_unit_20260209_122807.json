@@ -1,0 +1,151 @@
+{
+  "experiment_name": "exp3_pivot_signals_unit",
+  "description": "Test pool.py pivot detection and processing functions",
+  "test_cases": [
+    {
+      "name": "no_pivot_initially",
+      "passed": true,
+      "details": "",
+      "category": "unit"
+    },
+    {
+      "name": "detect_after_append",
+      "passed": true,
+      "details": "",
+      "category": "unit"
+    },
+    {
+      "name": "detect_format_plain",
+      "passed": true,
+      "details": "Format 'plain': detected=True. Text: [PIVOT_RECOMMENDED] T001: reason",
+      "category": "format_robustness"
+    },
+    {
+      "name": "detect_format_bold",
+      "passed": true,
+      "details": "Format 'bold': detected=True. Text: **[PIVOT_RECOMMENDED]** T001: reason",
+      "category": "format_robustness"
+    },
+    {
+      "name": "detect_format_bold_no_space",
+      "passed": true,
+      "details": "Format 'bold_no_space': detected=True. Text: **[PIVOT_RECOMMENDED]**T001: reason",
+      "category": "format_robustness"
+    },
+    {
+      "name": "detect_format_with_timestamp",
+      "passed": true,
+      "details": "Format 'with_timestamp': detected=True. Text: - [2026-02-09 10:00] **[PIVOT_RECOMMENDED]** T001: declining",
+      "category": "format_robustness"
+    },
+    {
+      "name": "detect_format_extra_spaces",
+      "passed": true,
+      "details": "Format 'extra_spaces': detected=True. Text: [PIVOT_RECOMMENDED]  T001:  reason  with  spaces",
+      "category": "format_robustness"
+    },
+    {
+      "name": "detect_format_multiline",
+      "passed": true,
+      "details": "Format 'multiline': detected=True. Text: [PIVOT_RECOMMENDED] T001: line1\n  continuation of reason",
+      "category": "format_robustness"
+    },
+    {
+      "name": "clear_marks_as_processed",
+      "passed": true,
+      "details": "Has PROCESSED: True, Has RECOMMENDED: False",
+      "category": "unit"
+    },
+    {
+      "name": "clear_handles_bold",
+      "passed": true,
+      "details": "Pool excerpt: PIVOT_PROCESSED]** T002: bold test\n\n\n(discoveries shared across tasks)\n\n## Verif",
+      "category": "unit"
+    },
+    {
+      "name": "clear_only_specific_task",
+      "passed": true,
+      "details": "T001 still recommended: False, T002 still recommended: True",
+      "category": "unit"
+    },
+    {
+      "name": "detect_multiple_pivots",
+      "passed": true,
+      "details": "",
+      "category": "unit"
+    },
+    {
+      "name": "multiple_pivot_count",
+      "passed": true,
+      "details": "Expected 3, found 3",
+      "category": "unit"
+    },
+    {
+      "name": "processed_not_detected",
+      "passed": true,
+      "details": "",
+      "category": "unit"
+    },
+    {
+      "name": "mix_recommended_and_processed",
+      "passed": true,
+      "details": "Has RECOMMENDED: True (from T002), Has PROCESSED: True (from T001)",
+      "category": "unit"
+    },
+    {
+      "name": "clear_nonexistent_safe",
+      "passed": true,
+      "details": "",
+      "category": "unit"
+    },
+    {
+      "name": "detect_outside_findings",
+      "passed": true,
+      "details": "has_pivot_recommendation searches entire pool.md, not just Findings section",
+      "category": "unit"
+    },
+    {
+      "name": "append_creates_findings_section",
+      "passed": true,
+      "details": "Findings section created and pivot signal present",
+      "category": "unit"
+    },
+    {
+      "name": "planner_prompt_has_pivot_instructions",
+      "passed": true,
+      "details": "Has reading section: True, mentions PIVOT_RECOMMENDED: True",
+      "category": "design_gap"
+    },
+    {
+      "name": "planner_prompt_requires_response",
+      "passed": true,
+      "details": "Has MUST respond: True. Without MCP, Planner must parse markdown to find this.",
+      "category": "design_gap"
+    },
+    {
+      "name": "planner_prompt_blocks_done",
+      "passed": true,
+      "details": "Has NEVER DONE rule: True. Orchestrator also has code-level check.",
+      "category": "design_gap"
+    },
+    {
+      "name": "orchestrator_blocks_done_on_pivot",
+      "passed": true,
+      "details": "Orchestrator checks for PIVOT_RECOMMENDED before allowing DONE: True. This is a code-level safety net for when Planner misses the signal.",
+      "category": "design_gap"
+    },
+    {
+      "name": "detect_with_unicode",
+      "passed": true,
+      "details": "Pivot with Chinese chars + arrows detected: True",
+      "category": "format_robustness"
+    },
+    {
+      "name": "empty_pool_no_error",
+      "passed": true,
+      "details": "Should return False for empty pool without error",
+      "category": "unit"
+    }
+  ],
+  "timestamp": "2026-02-09T12:28:07.055218"
+}

@@ -7,11 +7,10 @@ Possible verdicts:
 - FAILED: fundamental issue, need different approach
 """
 
-import re
 from dataclasses import dataclass
 from enum import Enum
 
-from claude_agent_sdk import ClaudeAgentOptions
+from claude_agent_sdk import ClaudeAgentOptions, SandboxSettings
 from rich.console import Console
 
 from .logger import log_tool_call, stream_query
@@ -20,6 +19,19 @@ from .prompts import REVIEWER_SYSTEM_PROMPT, build_reviewer_prompt
 from .utils import extract_json
 
 console = Console()
+
+REVIEWER_OUTPUT_SCHEMA = {
+    "type": "json_schema",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "verdict": {"type": "string", "enum": ["passed", "retry", "failed"]},
+            "reason": {"type": "string"},
+            "suggestions": {"type": "string"},
+        },
+        "required": ["verdict", "reason"],
+    },
+}
 
 
 class Verdict(Enum):
@@ -33,51 +45,30 @@ class ReviewResult:
     verdict: Verdict
     reason: str
     suggestions: str = ""
+    tool_count: int = 0
     result_stats: object = None  # ResultMessage from SDK
 
 
-def parse_reviewer_output(text: str) -> ReviewResult:
-    """Parse reviewer output into a ReviewResult.
-
-    Tries JSON first (more reliable), falls back to regex for backwards compatibility.
-    """
-    # Try JSON parsing first
-    json_obj = extract_json(text)
-    if json_obj and "verdict" in json_obj:
-        verdict_str = json_obj["verdict"].lower()
+def parse_reviewer_output(structured_output: dict | None, text: str) -> ReviewResult:
+    """Parse reviewer output. Prefers structured_output, falls back to JSON extraction."""
+    obj = structured_output
+    if not obj:
+        obj = extract_json(text)
+    if obj and "verdict" in obj:
+        verdict_str = obj["verdict"].lower()
         try:
             verdict = Verdict(verdict_str)
         except ValueError:
             verdict = Verdict.RETRY
         return ReviewResult(
             verdict=verdict,
-            reason=json_obj.get("reason", ""),
-            suggestions=json_obj.get("suggestions", ""),
+            reason=obj.get("reason", ""),
+            suggestions=obj.get("suggestions", ""),
         )
-
-    # Fallback: regex parsing
-    verdict_match = re.search(r"VERDICT:\s*(\w+)", text, re.IGNORECASE)
-    verdict_str = verdict_match.group(1).lower() if verdict_match else "retry"
-
-    try:
-        verdict = Verdict(verdict_str)
-    except ValueError:
-        verdict = Verdict.RETRY
-
-    reason_match = re.search(r"REASON:\s*(.+?)(?=\n(?:SUGGESTIONS:|$))", text, re.IGNORECASE | re.DOTALL)
-    reason = reason_match.group(1).strip() if reason_match else ""
-
-    suggestions_match = re.search(r"SUGGESTIONS:\s*(.+)", text, re.IGNORECASE | re.DOTALL)
-    suggestions = suggestions_match.group(1).strip() if suggestions_match else ""
-
-    return ReviewResult(
-        verdict=verdict,
-        reason=reason,
-        suggestions=suggestions,
-    )
+    return ReviewResult(verdict=Verdict.RETRY, reason="Failed to parse reviewer output")
 
 
-async def review(task_id: str, cwd: str = ".", verbose: bool = False) -> ReviewResult:
+async def review(task_id: str, cwd: str = ".", verbose: bool = False, thinking_budget: int | None = None) -> ReviewResult:
     """
     Review an IMPLEMENT task after execution.
 
@@ -108,22 +99,82 @@ async def review(task_id: str, cwd: str = ".", verbose: bool = False) -> ReviewR
     )
 
     # Run reviewer query with unified streaming
+    reviewer_sandbox = SandboxSettings(
+        enabled=True,
+        autoAllowBashIfSandboxed=True,
+        allowUnsandboxedCommands=False,
+    )
+
+    # Configure thinking for reviewer (default: 0 — mostly runs tests and checks)
+    reviewer_options = ClaudeAgentOptions(
+        system_prompt=REVIEWER_SYSTEM_PROMPT,
+        allowed_tools=["Read", "Bash", "Glob", "Grep", "LSP", "WebSearch"],
+        permission_mode="acceptEdits",
+        sandbox=reviewer_sandbox,
+        max_turns=25,
+        cwd=cwd,
+        output_format=REVIEWER_OUTPUT_SCHEMA,
+    )
+    effective = thinking_budget if thinking_budget is not None else 0
+    if effective > 0:
+        reviewer_options.max_thinking_tokens = effective
+
     sr = await stream_query(
         prompt=prompt,
-        options=ClaudeAgentOptions(
-            system_prompt=REVIEWER_SYSTEM_PROMPT,
-            allowed_tools=["Read", "Bash", "Glob", "Grep", "LSP", "WebSearch"],
-            permission_mode="acceptEdits",
-            max_turns=10,
-            cwd=cwd,
-        ),
+        options=reviewer_options,
         agent_name="reviewer",
         emoji="📋",
         cwd=cwd,
         verbose=verbose,
+        include_partial=verbose,
     )
 
     # Parse and return result
-    review_result = parse_reviewer_output(sr.text)
+    review_result = parse_reviewer_output(sr.structured_output, sr.text)
+    review_result.tool_count = sr.tool_count
     review_result.result_stats = sr.result_stats
+
+    # Layer 2: Detect max_turns exhausted without verdict, resume for follow-up
+    REVIEWER_MAX_TURNS = 25
+    turns_exhausted = (
+        sr.result_stats
+        and sr.result_stats.num_turns >= REVIEWER_MAX_TURNS
+        and review_result.reason == ""
+    )
+
+    if turns_exhausted:
+        console.print("[yellow]⚠ Reviewer exhausted turns without verdict, requesting follow-up...[/yellow]")
+
+        # Resume same session to preserve full investigation context
+        followup_sr = await stream_query(
+            prompt="你已经用完了所有调查轮次。基于你已经看到的所有内容，立即输出 verdict JSON。",
+            options=ClaudeAgentOptions(
+                system_prompt=REVIEWER_SYSTEM_PROMPT,
+                resume=sr.result_stats.session_id,
+                allowed_tools=[],
+                max_turns=3,
+                cwd=cwd,
+                output_format=REVIEWER_OUTPUT_SCHEMA,
+            ),
+            agent_name="reviewer",
+            emoji="📋",
+            cwd=cwd,
+            verbose=verbose,
+            include_partial=verbose,
+        )
+
+        if followup_sr.text.strip():
+            review_result = parse_reviewer_output(followup_sr.structured_output, followup_sr.text)
+            review_result.tool_count = sr.tool_count  # keep original tool count
+            review_result.result_stats = sr.result_stats
+
+        # If follow-up also failed, provide a meaningful reason
+        if review_result.reason == "":
+            review_result = ReviewResult(
+                verdict=Verdict.RETRY,
+                reason=f"Reviewer exhausted {REVIEWER_MAX_TURNS} turns without producing a verdict (follow-up also failed).",
+                tool_count=sr.tool_count,
+                result_stats=sr.result_stats,
+            )
+
     return review_result

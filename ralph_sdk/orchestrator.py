@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from .clarifier import clarify_requirements, clarify_requirements_v2, quick_clarify
-from .evaluator import evaluate, get_attempt_history
+from .evaluator import evaluate, get_attempt_history, read_adversarial_response
 from .logger import SessionLogger, archive_session, format_duration, format_tokens, log_tool_call, stream_query
 from .notification import (
     notify_checkpoint,
@@ -53,6 +53,8 @@ from .pool import (
     parse_feedback,
     pool_exists,
     pool_needs_compaction,
+    mark_pending_tasks_skipped,
+    extract_task_ids_from_pool,
     read_checkpoint_manifest,
     read_eval_config_from_goal,
     read_goal,
@@ -60,6 +62,7 @@ from .pool import (
     read_pool,
     read_task,
     save_checkpoint_manifest,
+    update_pool_status,
     write_pool,
     write_task,
 )
@@ -199,6 +202,7 @@ async def _execute_single_task(
     cwd: str,
     verbose: bool,
     semaphore: asyncio.Semaphore,
+    thinking_budget: int | None = None,
 ) -> ParallelTaskResult:
     """
     Execute a single task with semaphore for concurrency control.
@@ -209,6 +213,7 @@ async def _execute_single_task(
         cwd: Working directory
         verbose: Show detailed output
         semaphore: Semaphore for limiting concurrent executions
+        thinking_budget: Token budget for extended thinking
 
     Returns:
         ParallelTaskResult with execution outcome
@@ -216,7 +221,7 @@ async def _execute_single_task(
     async with semaphore:
         try:
             console.print(f"[cyan]⚡ Starting parallel task {task_id} ({task_type})...[/cyan]")
-            result = await work(task_id, task_type, cwd, verbose=verbose)
+            result = await work(task_id, task_type, cwd, verbose=verbose, thinking_budget=thinking_budget)
             return ParallelTaskResult(
                 task_id=task_id,
                 task_type=task_type,
@@ -239,6 +244,7 @@ async def execute_parallel_tasks(
     cwd: str = ".",
     verbose: bool = False,
     max_parallel: int = DEFAULT_MAX_PARALLEL,
+    thinking_budget: int | None = None,
 ) -> ParallelExecutionResult:
     """
     Execute multiple tasks in parallel.
@@ -280,7 +286,7 @@ async def execute_parallel_tasks(
 
     # Create coroutines for all tasks
     coroutines = [
-        _execute_single_task(task_id, task_type, cwd, verbose, semaphore)
+        _execute_single_task(task_id, task_type, cwd, verbose, semaphore, thinking_budget=thinking_budget)
         for task_id, task_type in tasks_with_types
     ]
 
@@ -319,7 +325,7 @@ async def execute_parallel_tasks(
     )
 
 
-async def initialize_pool(cwd: str = ".", verbose: bool = False) -> None:
+async def initialize_pool(cwd: str = ".", verbose: bool = False, thinking_budget: int | None = None) -> None:
     """
     Initialize the task pool from goal.md.
 
@@ -350,18 +356,24 @@ IMPORTANT: All .ralph/ files MUST be written under {ralph_dir}/. Do NOT create .
 Remember: keep initial tasks coarse-grained. It's OK to have only 2-3 tasks.
 """
 
+    init_options = ClaudeAgentOptions(
+        system_prompt=INITIALIZER_SYSTEM_PROMPT,
+        allowed_tools=[
+            "Read", "Write", "Glob", "Grep", "LSP",
+            "WebFetch", "WebSearch",
+        ],
+        permission_mode="acceptEdits",
+        max_turns=20,
+        cwd=cwd,
+    )
+    # Initializer default: no thinking (simple task decomposition)
+    effective = thinking_budget if thinking_budget is not None else 0
+    if effective > 0:
+        init_options.max_thinking_tokens = effective
+
     sr = await stream_query(
         prompt=prompt,
-        options=ClaudeAgentOptions(
-            system_prompt=INITIALIZER_SYSTEM_PROMPT,
-            allowed_tools=[
-                "Read", "Write", "Glob", "Grep", "LSP",
-                "WebFetch", "WebSearch",
-            ],
-            permission_mode="acceptEdits",
-            max_turns=20,
-            cwd=cwd,
-        ),
+        options=init_options,
         agent_name="initializer",
         emoji="🏗️",
         cwd=cwd,
@@ -442,6 +454,7 @@ async def run(
     clarify_mode: str = "auto",
     target_score: int = None,
     explore_mode: bool = False,
+    thinking_budget: int | None = None,
 ) -> bool:
     """
     Run the full task pool loop.
@@ -461,6 +474,8 @@ async def run(
             will continue iterating. If None, parsed from goal.md or defaults to 95.
         explore_mode: If True, don't DONE until user explicitly says stop.
             Continues exploring alternatives even after tasks complete.
+        thinking_budget: Token budget for extended thinking. None=agent defaults,
+            0=off for all agents, N=use N for all agents.
 
     Returns:
         True if goal was completed, False if max iterations reached
@@ -516,7 +531,7 @@ async def run(
     # Phase 2: Initialize pool
     if not pool_exists(cwd):
         console.print("\n[bold]Phase 2: Initializing task pool[/bold]\n")
-        init_stats = await initialize_pool(cwd, verbose=verbose)
+        init_stats = await initialize_pool(cwd, verbose=verbose, thinking_budget=thinking_budget)
         if init_stats:
             logger.log_query_stats(init_stats)
         if not pool_exists(cwd):
@@ -576,7 +591,7 @@ async def run(
 
         # Planner decides next action
         console.print("[yellow]Planner deciding...[/yellow]")
-        decision = await plan(cwd, verbose=verbose, explore_mode=explore_mode)
+        decision = await plan(cwd, verbose=verbose, explore_mode=explore_mode, thinking_budget=thinking_budget)
 
         # Log planner stats
         if decision.result_stats:
@@ -611,6 +626,29 @@ async def run(
                 append_to_progress_log(f"DONE_BLOCKED - Unprocessed pivot recommendation", cwd)
                 continue
 
+            # P0: Check if any non-skipped task scored below target_score
+            task_ids = extract_task_ids_from_pool(cwd)
+            below_target = []
+            for tid in task_ids:
+                task_content = read_task(tid, cwd)
+                if not task_content:
+                    continue
+                # Skip tasks with status: skipped/pending
+                content_lower = task_content.lower()
+                status_match = re.search(r"## status[:\s]+(?:[^\w\s]\s*)?(\w+)", content_lower)
+                if status_match and status_match.group(1) in ("skipped", "pending"):
+                    continue
+                # Check latest score
+                _, prev_scores = get_attempt_history(tid, cwd)
+                if prev_scores and prev_scores[-1] < target_score:
+                    below_target.append((tid, prev_scores[-1]))
+            if below_target:
+                for tid, score in below_target:
+                    console.print(f"[yellow]\u26a0\ufe0f {tid} latest score {score:.0f} < target {target_score}, continuing[/yellow]")
+                logger.log_iteration_end(i, "DONE_BLOCKED", reason=f"Tasks below target: {below_target}")
+                append_to_progress_log(f"DONE_BLOCKED - Tasks below target_score: {below_target}", cwd)
+                continue
+
             # Check explore mode - need user confirmation to stop
             if explore_mode:
                 feedback = parse_feedback(cwd)
@@ -625,6 +663,13 @@ async def run(
             console.print("\n[bold green]✓ Goal completed![/bold green]")
             _print_session_summary(logger, i)
             append_to_progress_log(f"DONE - Goal completed after {i} iterations", cwd)
+            # Update pool status and mark pending tasks as skipped
+            update_pool_status("COMPLETED", cwd)
+            skipped = mark_pending_tasks_skipped(
+                f"Superseded — goal completed after {i} iterations", cwd
+            )
+            if skipped:
+                console.print(f"[dim]Marked {len(skipped)} pending task(s) as skipped: {', '.join(skipped)}[/dim]")
             generate_handoff_note(cwd)  # Save state for potential future resume
             logger.log_session_end(success=True, reason=f"Completed after {i} iterations")
             return True
@@ -654,7 +699,7 @@ async def run(
                 continue
 
             console.print(f"\n[yellow]Exploring {decision.target}...[/yellow]\n")
-            result = await work(decision.target, "EXPLORE", cwd, verbose=verbose)
+            result = await work(decision.target, "EXPLORE", cwd, verbose=verbose, thinking_budget=thinking_budget)
 
             # Log worker stats
             if result.result_stats:
@@ -704,6 +749,7 @@ async def run(
                     cwd=cwd,
                     verbose=verbose,
                     max_parallel=max_parallel,
+                    thinking_budget=thinking_budget,
                 )
 
                 # Log each task result
@@ -720,12 +766,13 @@ async def run(
                     if task_result.success and task_result.task_type == "IMPLEMENT":
                         console.print(f"\n[dim]Reviewing {task_result.task_id}...[/dim]")
                         try:
-                            review_result = await review(task_result.task_id, cwd, verbose=verbose)
+                            review_result = await review(task_result.task_id, cwd, verbose=verbose, thinking_budget=thinking_budget)
                             console.print(f"[dim]{task_result.task_id} review: {review_result.verdict.value}[/dim]")
                             logger.log_reviewer_verdict(
                                 task_id=task_result.task_id,
                                 verdict=review_result.verdict.value,
                                 reason=review_result.reason,
+                                tool_calls=review_result.tool_count,
                             )
                             # Note: For simplicity, we log but don't handle RETRY/FAILED here
                             # The Planner will see the review results in task files and decide next steps
@@ -758,6 +805,43 @@ async def run(
                 logger.log_iteration_end(i, decision.action.value, success=parallel_result.all_succeeded)
                 continue
 
+        # Handle FORK
+        if decision.action == Action.FORK:
+            if not decision.fork_approaches:
+                console.print("[red]Error: FORK requires fork_approaches[/red]")
+                logger.log_error("FORK requires fork_approaches")
+                continue
+
+            if not decision.target:
+                console.print("[red]Error: FORK requires a target (base session task)[/red]")
+                logger.log_error("FORK requires a target")
+                continue
+
+            console.print(f"\n[magenta]🔀 FORK: Trying {len(decision.fork_approaches)} approaches in parallel[/magenta]")
+            for idx, approach in enumerate(decision.fork_approaches, 1):
+                console.print(f"  [dim]{idx}. {approach[:100]}[/dim]")
+
+            # Fork each approach as a parallel EXPLORE task
+            fork_results = []
+            for approach in decision.fork_approaches:
+                result = await work(decision.target, "EXPLORE", cwd, verbose=verbose, thinking_budget=thinking_budget)
+                fork_results.append(result)
+
+            # Log results
+            success_count = sum(1 for r in fork_results if r.success)
+            append_to_progress_log(
+                f"FORK {decision.target} - {len(decision.fork_approaches)} approaches tried, "
+                f"{success_count} succeeded",
+                cwd,
+            )
+
+            for r in fork_results:
+                if r.result_stats:
+                    logger.log_query_stats(r.result_stats)
+
+            logger.log_iteration_end(i, decision.action.value, success=success_count > 0)
+            continue
+
         # Handle EXECUTE
         if decision.action == Action.EXECUTE:
             if not decision.target:
@@ -766,7 +850,26 @@ async def run(
                 continue
 
             console.print(f"\n[yellow]Executing {decision.target}...[/yellow]\n")
-            result = await work(decision.target, "IMPLEMENT", cwd, verbose=verbose)
+
+            # Read adversarial findings from the most recent evaluation (if any)
+            adv_findings = None
+            audits_path = Path(cwd) / ".ralph" / "audits"
+            if audits_path.exists():
+                attempt_number, _ = get_attempt_history(decision.target, cwd)
+                for att in range(attempt_number, 0, -1):
+                    findings_file = audits_path / f"adversarial_{decision.target}_{att}.md"
+                    if findings_file.exists():
+                        content = findings_file.read_text()
+                        if "No adversarial issues found" not in content:
+                            adv_findings = content
+                        break
+
+            result = await work(
+                decision.target, "IMPLEMENT", cwd,
+                verbose=verbose,
+                thinking_budget=thinking_budget,
+                adversarial_findings=adv_findings,
+            )
 
             # Log worker stats
             if result.result_stats:
@@ -785,7 +888,7 @@ async def run(
 
                 # Review the result with exception handling
                 try:
-                    review_result = await review(decision.target, cwd, verbose=verbose)
+                    review_result = await review(decision.target, cwd, verbose=verbose, thinking_budget=thinking_budget)
                 except Exception as e:
                     console.print(f"[red]Review failed: {e}[/red]")
                     logger.log_error(f"Review failed for {decision.target}: {e}")
@@ -818,6 +921,7 @@ async def run(
                     task_id=decision.target,
                     verdict=review_result.verdict.value,
                     reason=review_result.reason,
+                    tool_calls=review_result.tool_count,
                 )
 
                 if review_result.verdict == Verdict.PASSED:
@@ -829,27 +933,66 @@ async def run(
                     # Get attempt history for pivot detection
                     attempt_number, previous_scores = get_attempt_history(decision.target, cwd)
 
+                    # Read Worker's adversarial response from previous round (if any)
+                    prev_adv_response = read_adversarial_response(
+                        decision.target, attempt_number - 1, cwd
+                    ) if attempt_number > 1 else None
+
                     eval_result = await evaluate(
                         decision.target,
                         cwd=cwd,
                         verbose=verbose,
                         previous_scores=previous_scores,
                         attempt_number=attempt_number,
+                        thinking_budget=thinking_budget,
+                        previous_adversarial_responses=prev_adv_response,
                     )
+
+                    # Auto-retry on infra failure (up to 2 retries, no worker/reviewer needed)
+                    MAX_EVAL_RETRIES = 2
+                    eval_retry = 0
+                    while eval_result.is_infra_failure and eval_retry < MAX_EVAL_RETRIES:
+                        eval_retry += 1
+                        console.print(f"[yellow]⚠ EVAL_INFRA_FAILURE detected, retrying evaluation ({eval_retry}/{MAX_EVAL_RETRIES})...[/yellow]")
+                        eval_result = await evaluate(
+                            decision.target,
+                            cwd=cwd,
+                            verbose=verbose,
+                            previous_scores=previous_scores,
+                            attempt_number=attempt_number,
+                            thinking_budget=thinking_budget,
+                            previous_adversarial_responses=prev_adv_response,
+                        )
 
                     # Log evaluator stats
                     if eval_result.result_stats:
                         logger.log_query_stats(eval_result.result_stats)
 
-                    # Log evaluation
-                    logger.log_evaluation(
-                        task_id=decision.target,
-                        passed=eval_result.overall_passed,
-                        score=eval_result.overall_score,
-                        issues=eval_result.issues,
-                    )
+                    # Log evaluation (mark infra failures distinctly)
+                    if eval_result.is_infra_failure:
+                        logger.log_evaluation(
+                            task_id=decision.target,
+                            passed=False,
+                            score=0,
+                            issues=["EVAL_INFRA_FAILURE: evaluator did not produce valid output after retries"],
+                        )
+                        console.print(f"[red]✗ EVAL_INFRA_FAILURE: evaluator failed to produce output after {MAX_EVAL_RETRIES} retries[/red]")
+                        append_to_progress_log(
+                            f"EXECUTE {decision.target} - EVAL_INFRA_FAILURE (evaluator did not produce output, skipping this evaluation)",
+                            cwd
+                        )
+                        logger.log_iteration_end(i, decision.action.value, success=True)
+                        continue
+                    else:
+                        logger.log_evaluation(
+                            task_id=decision.target,
+                            passed=eval_result.overall_passed,
+                            score=eval_result.overall_score,
+                            issues=eval_result.issues,
+                        )
 
                     # P0: If Evaluator suggests pivot, write to pool.md for Planner to see
+                    # (never write pivot for infra failures — already handled above)
                     if eval_result.should_pivot:
                         append_to_findings(
                             f"**[PIVOT_RECOMMENDED]** {decision.target}: {eval_result.pivot_reason}",
@@ -956,7 +1099,7 @@ async def run(
 
                         append_to_progress_log(
                             f"EXECUTE {decision.target} - NEEDS IMPROVEMENT "
-                            f"(score: {eval_result.overall_score:.0f}/{target_score}, "
+                            f"(score: {eval_result.overall_score:.0f}/{target_score} — BELOW TARGET, "
                             f"metrics_found: {len(eval_result.metrics)}, "
                             f"details in tasks/{decision.target}.md)",
                             cwd
@@ -1181,6 +1324,7 @@ async def resume(
     max_parallel: int = DEFAULT_MAX_PARALLEL,
     target_score: int = None,
     explore_mode: bool = False,
+    thinking_budget: int | None = None,
 ) -> bool:
     """
     Resume an existing task pool session.
@@ -1283,4 +1427,5 @@ async def resume(
         max_parallel=max_parallel,
         target_score=target_score,
         explore_mode=explore_mode,
+        thinking_budget=thinking_budget,
     )

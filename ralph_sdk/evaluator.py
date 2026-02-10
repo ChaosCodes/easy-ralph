@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 from claude_agent_sdk import ClaudeAgentOptions
@@ -19,10 +20,42 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .logger import log_tool_call, stream_query
-from .pool import read_goal, read_task, write_task
+from .pool import AUDITS_DIR, RALPH_DIR, read_goal, read_task, write_task
+from .prompts import EVALUATOR_ADVERSARIAL_SECTION
 from .utils import extract_json
 
 console = Console()
+
+EVALUATOR_OUTPUT_SCHEMA = {
+    "type": "json_schema",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "metrics": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "passed": {"type": "boolean"},
+                        "value": {"type": ["string", "null"]},
+                        "score": {"type": ["number", "null"]},
+                        "proxy_score": {"type": ["number", "null"]},
+                        "proxy_notes": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["name", "passed", "reason"],
+                },
+            },
+            "issues": {"type": "array", "items": {"type": "string"}},
+            "suggestions": {"type": "array", "items": {"type": "string"}},
+            "overall_score": {"type": "number"},
+            "pivot_recommended": {"type": "boolean"},
+            "pivot_reason": {"type": "string"},
+        },
+        "required": ["metrics", "overall_score"],
+    },
+}
 
 
 # -----------------------------------------------------------------------------
@@ -87,11 +120,21 @@ class EvaluationResult:
     # Execution stats
     result_stats: object = None  # ResultMessage from SDK
 
+    # How many metrics the agent attempted to evaluate (from its JSON output)
+    metrics_attempted: int = 0
+
     # Autonomous judgment fields
     attempt_number: int = 1           # Which attempt this is
     previous_scores: list[float] = field(default_factory=list)  # Scores from previous attempts
     should_pivot: bool = False        # Agent's recommendation to pivot
     pivot_reason: str = ""            # Why pivoting is recommended
+
+    # Infrastructure failure detection
+    is_infra_failure: bool = False  # True when eval failed due to turn limit / parse failure (not real score)
+
+    # Adversarial testing fields
+    adversarial_findings: str = ""         # Content of findings file
+    adversarial_findings_path: str = ""    # Path to findings file
 
     def summary(self) -> str:
         """Generate a summary string."""
@@ -212,6 +255,7 @@ Your job is to evaluate the quality of completed work against specific metrics.
 - Reference actual code/files when pointing out issues
 - Give scores based on real quality, not just "it works"
 - Suggestions should be concrete and actionable
+- When running tests or scripts, use `python3` (not `python`). If the project has a `src/` layout, set `PYTHONPATH=src` (e.g. `PYTHONPATH=src python3 -m pytest tests/ -v`)
 
 ## Scoring Guide
 
@@ -222,12 +266,29 @@ For SUBJECTIVE metrics (0-100):
 - 60-69: Below standard, needs work
 - <60: Poor, significant problems
 
+## Anti-Anchoring Rules
+
+- Score based ONLY on current code quality. Previous scores are irrelevant.
+- If all identified issues are cosmetic/style-only (docstrings, naming, type hints),
+  the score MUST be >= 95. Cosmetic issues alone cannot deduct more than 5 points.
+- Distinguish between:
+  - FUNCTIONAL issues (bugs, missing features, wrong behavior): up to -30 points
+  - STRUCTURAL issues (DRY violations, missing error handling, bad architecture): up to -20 points
+  - COSMETIC issues (style, naming, docstrings, type annotations): up to -5 points
+- When listing issues, tag each as [FUNCTIONAL], [STRUCTURAL], or [COSMETIC]
+
 ## Pivot Assessment
 
 When the prompt includes an "Attempt History" section, you MUST assess whether the current approach should pivot:
 - Consider the score trend, number of attempts, and whether hard metrics keep failing
 - Output your judgment in PIVOT_RECOMMENDED and PIVOT_REASON fields
 - You do NOT need to write any files — the system handles propagation automatically
+
+## Adversarial Testing
+
+After structural evaluation, you may be asked to perform adversarial testing.
+If the prompt includes an "Adversarial Verification Phase" section, follow those instructions
+to write adversarial tests and findings. This is separate from and in addition to your JSON evaluation output.
 
 ## Output Format
 
@@ -254,26 +315,6 @@ Output your evaluation as a JSON object:
 }
 ```
 
-If JSON is not possible, fall back to this text format:
-
-```
-METRIC: <metric_name>
-PASSED: <yes|no>
-VALUE: <measured value if applicable>
-SCORE: <0-100 for subjective metrics>
-REASON: <explanation>
-
-ISSUES:
-- <issue 1>
-
-SUGGESTIONS:
-- <suggestion 1>
-
-OVERALL_SCORE: <0-100>
-
-PIVOT_RECOMMENDED: <yes|no>
-PIVOT_REASON: <reason>
-```
 """
 
 
@@ -298,6 +339,8 @@ def build_evaluator_prompt(
     include_proxy: bool = False,
     attempt_number: int = 1,
     previous_scores: Optional[list[float]] = None,
+    audits_dir: str = "",
+    previous_adversarial_responses: Optional[str] = None,
 ) -> str:
     """Build the evaluator prompt with metrics to evaluate."""
     metrics_lines = []
@@ -325,19 +368,42 @@ This proxy score will be used to pre-filter checkpoints before user testing.
 
     history_section = ""
     if attempt_number > 1 and previous_scores:
-        scores_str = ", ".join(f"{s:.0f}" for s in previous_scores)
-        trend = _describe_trend(previous_scores)
         history_section = f"""
 ## Attempt History
 
 This is attempt **#{attempt_number}** for this task.
-Previous scores: [{scores_str}]
-Score trend: {trend}
+The worker has made {attempt_number - 1} previous attempts at this task.
 
-Based on this history, assess whether the current approach should continue or pivot.
+IMPORTANT: Evaluate the code AS-IS based solely on its current quality.
+Do NOT consider how many attempts have been made when assigning scores.
+A perfect implementation should score 95+ regardless of attempt number.
+
+Based on the code quality, assess whether the current approach should continue or pivot.
 Output your judgment in PIVOT_RECOMMENDED and PIVOT_REASON fields.
 """
 
+    adversarial_section = ""
+    if audits_dir:
+        adversarial_section = EVALUATOR_ADVERSARIAL_SECTION.format(
+            audits_dir=audits_dir,
+            task_id=task_id,
+            attempt=attempt_number,
+        )
+
+    adversarial_response_section = ""
+    if previous_adversarial_responses:
+        adversarial_response_section = f"""
+## Worker's Previous Adversarial Response
+
+The Worker investigated the findings from the previous round and provided this response.
+Evaluate whether their rebuttals are valid. Focus your new adversarial tests on areas NOT yet covered.
+
+---
+{previous_adversarial_responses}
+---
+"""
+
+    metric_count = len(metrics)
     return f"""Goal:
 ---
 {goal}
@@ -353,7 +419,9 @@ Task ({task_id}) to evaluate:
 {metrics_desc}
 {proxy_instructions}{history_section}
 Evaluate each metric. Read relevant files, run commands if needed, and provide your assessment.
-"""
+
+**IMPORTANT**: Your JSON output MUST contain exactly {metric_count} metrics entries — one for each metric listed above. Do not skip any.
+{adversarial_section}{adversarial_response_section}"""
 
 
 # -----------------------------------------------------------------------------
@@ -361,21 +429,34 @@ Evaluate each metric. Read relevant files, run commands if needed, and provide y
 # -----------------------------------------------------------------------------
 
 def _parse_evaluator_json(obj: dict, metrics: list[Metric]) -> EvaluationResult:
-    """Parse a JSON object into an EvaluationResult."""
+    """Parse a JSON object into an EvaluationResult.
+
+    When the agent outputs metric names not in the provided metrics list
+    (e.g. it evaluated goal.md's custom metrics instead of DEFAULT_METRICS),
+    create ad-hoc Metric objects so results are not silently discarded.
+    """
+    agent_metrics = obj.get("metrics", [])
     results = []
-    for m_data in obj.get("metrics", []):
+    for m_data in agent_metrics:
         name = m_data.get("name", "")
         metric = next((m for m in metrics if m.name.lower() == name.lower()), None)
-        if metric:
-            results.append(MetricResult(
-                metric=metric,
-                passed=bool(m_data.get("passed", False)),
-                value=m_data.get("value"),
-                score=float(m_data["score"]) if m_data.get("score") is not None else None,
-                reason=m_data.get("reason", ""),
-                proxy_score=float(m_data["proxy_score"]) if m_data.get("proxy_score") is not None else None,
-                proxy_notes=m_data.get("proxy_notes", ""),
-            ))
+        if not metric:
+            # Create ad-hoc Metric from agent output
+            has_score = m_data.get("score") is not None
+            metric = Metric(
+                name=name,
+                type=MetricType.SUBJECTIVE if has_score else MetricType.HARD,
+                description=m_data.get("reason", name),
+            )
+        results.append(MetricResult(
+            metric=metric,
+            passed=bool(m_data.get("passed", False)),
+            value=m_data.get("value"),
+            score=float(m_data["score"]) if m_data.get("score") is not None else None,
+            reason=m_data.get("reason", ""),
+            proxy_score=float(m_data["proxy_score"]) if m_data.get("proxy_score") is not None else None,
+            proxy_notes=m_data.get("proxy_notes", ""),
+        ))
 
     issues = obj.get("issues", [])
     suggestions = obj.get("suggestions", [])
@@ -395,115 +476,53 @@ def _parse_evaluator_json(obj: dict, metrics: list[Metric]) -> EvaluationResult:
         issues=issues,
         suggestions=suggestions,
     )
+    result.metrics_attempted = len(agent_metrics)
     result.should_pivot = bool(should_pivot)
     result.pivot_reason = pivot_reason
 
     return result
 
 
-def _parse_evaluator_regex(text: str, metrics: list[Metric]) -> EvaluationResult:
-    """Parse evaluator output using regex (fallback)."""
-    results = []
+def _validate_score_consistency(result: EvaluationResult) -> None:
+    """Log warning if score seems inconsistent with issue severity."""
+    if not result.issues:
+        return
 
-    # Parse each metric result (extended pattern to include proxy scores)
-    metric_pattern = r"METRIC:\s*(\w+)\s*\nPASSED:\s*(yes|no)\s*\n(?:VALUE:\s*(.+?)\s*\n)?(?:SCORE:\s*(\d+)\s*\n)?(?:PROXY_SCORE:\s*(\d+)\s*\n)?(?:PROXY_NOTES:\s*(.+?)\s*\n)?REASON:\s*(.+?)(?=\nMETRIC:|\nISSUES:|\nSUGGESTIONS:|\nOVERALL_SCORE:|$)"
+    cosmetic_keywords = ["docstring", "type hint", "naming", "style", "annotation",
+                         "comment", "logging", "magic number", "cosmetic"]
 
-    for match in re.finditer(metric_pattern, text, re.IGNORECASE | re.DOTALL):
-        name = match.group(1)
-        passed = match.group(2).lower() == "yes"
-        value = match.group(3).strip() if match.group(3) else None
-        score = float(match.group(4)) if match.group(4) else None
-        proxy_score = float(match.group(5)) if match.group(5) else None
-        proxy_notes = match.group(6).strip() if match.group(6) else ""
-        reason = match.group(7).strip()
-
-        metric = next((m for m in metrics if m.name.lower() == name.lower()), None)
-        if metric:
-            results.append(MetricResult(
-                metric=metric,
-                passed=passed,
-                value=value,
-                score=score,
-                reason=reason,
-                proxy_score=proxy_score,
-                proxy_notes=proxy_notes,
-            ))
-
-    # If the extended pattern didn't match, try the simpler pattern
-    if not results:
-        simple_pattern = r"METRIC:\s*(\w+)\s*\nPASSED:\s*(yes|no)\s*\n(?:VALUE:\s*(.+?)\s*\n)?(?:SCORE:\s*(\d+)\s*\n)?REASON:\s*(.+?)(?=\nMETRIC:|\nISSUES:|\nSUGGESTIONS:|\nOVERALL_SCORE:|$)"
-        for match in re.finditer(simple_pattern, text, re.IGNORECASE | re.DOTALL):
-            name = match.group(1)
-            passed = match.group(2).lower() == "yes"
-            value = match.group(3).strip() if match.group(3) else None
-            score = float(match.group(4)) if match.group(4) else None
-            reason = match.group(5).strip()
-
-            metric = next((m for m in metrics if m.name.lower() == name.lower()), None)
-            if metric:
-                results.append(MetricResult(
-                    metric=metric,
-                    passed=passed,
-                    value=value,
-                    score=score,
-                    reason=reason,
-                ))
-
-    # Parse issues
-    issues = []
-    issues_match = re.search(r"ISSUES:\s*\n((?:- .+\n?)+)", text, re.IGNORECASE)
-    if issues_match:
-        issues = [line.strip("- \n") for line in issues_match.group(1).split("\n") if line.strip().startswith("-")]
-
-    # Parse suggestions
-    suggestions = []
-    suggestions_match = re.search(r"SUGGESTIONS:\s*\n((?:- .+\n?)+)", text, re.IGNORECASE)
-    if suggestions_match:
-        suggestions = [line.strip("- \n") for line in suggestions_match.group(1).split("\n") if line.strip().startswith("-")]
-
-    # Parse overall score
-    overall_match = re.search(r"OVERALL_SCORE:\s*(\d+)", text, re.IGNORECASE)
-    overall_score = float(overall_match.group(1)) if overall_match else 0
-
-    # Parse PIVOT recommendation from agent output
-    pivot_match = re.search(r"PIVOT_RECOMMENDED:\s*(yes|no)", text, re.IGNORECASE)
-    if pivot_match:
-        should_pivot = pivot_match.group(1).lower() == "yes"
-    else:
-        should_pivot = None
-
-    pivot_reason_match = re.search(r"PIVOT_REASON:\s*(.+?)(?:\n|$)", text, re.IGNORECASE)
-    pivot_reason = pivot_reason_match.group(1).strip() if pivot_reason_match else ""
-
-    hard_metrics = [r for r in results if r.metric.type == MetricType.HARD]
-    overall_passed = all(r.passed for r in hard_metrics) if hard_metrics else True
-
-    result = EvaluationResult(
-        task_id="",
-        overall_passed=overall_passed,
-        overall_score=overall_score,
-        metrics=results,
-        issues=issues,
-        suggestions=suggestions,
+    cosmetic_count = sum(
+        1 for issue in result.issues
+        if any(kw.lower() in issue.lower() for kw in cosmetic_keywords)
     )
 
-    if should_pivot is not None:
-        result.should_pivot = should_pivot
-        result.pivot_reason = pivot_reason
+    total = len(result.issues)
+    if cosmetic_count == total and result.overall_score < 95:
+        console.print(
+            f"[yellow]\u26a0 All {total} issues are cosmetic but score is {result.overall_score:.0f} "
+            f"(expected >= 95 for cosmetic-only issues)[/yellow]"
+        )
 
-    return result
 
+def parse_evaluator_output(structured_output: dict | None, text: str, metrics: list[Metric]) -> EvaluationResult:
+    """Parse evaluator output. Prefers structured_output, falls back to JSON extraction.
 
-def parse_evaluator_output(text: str, metrics: list[Metric]) -> EvaluationResult:
-    """Parse evaluator output into EvaluationResult.
-
-    Tries JSON first (more reliable), falls back to regex for backwards compatibility.
+    When neither structured_output nor text contains valid JSON with metrics,
+    this is an infrastructure failure (e.g. turn limit hit before agent produced output),
+    NOT a real score of 0.
     """
-    json_obj = extract_json(text)
-    if json_obj and "metrics" in json_obj:
-        return _parse_evaluator_json(json_obj, metrics)
-
-    return _parse_evaluator_regex(text, metrics)
+    obj = structured_output
+    if not obj:
+        obj = extract_json(text)
+    if obj and "metrics" in obj:
+        return _parse_evaluator_json(obj, metrics)
+    # Infrastructure failure: agent never produced evaluation JSON
+    result = EvaluationResult(
+        task_id="", overall_passed=False, overall_score=0,
+        issues=["Failed to parse evaluator output"],
+    )
+    result.is_infra_failure = True
+    return result
 
 
 # -----------------------------------------------------------------------------
@@ -521,6 +540,8 @@ async def evaluate(
     attempt_number: int = 1,
     pivot_threshold: int = 3,
     min_improvement: float = 5.0,
+    thinking_budget: int | None = None,
+    previous_adversarial_responses: Optional[str] = None,
 ) -> EvaluationResult:
     """
     Evaluate a task's output against quality metrics.
@@ -556,6 +577,11 @@ async def evaluate(
 
     console.print(f"\n[bold cyan]Evaluating {task_id}...[/bold cyan]")
 
+    # Set up adversarial audits directory
+    audits_path = Path(cwd) / AUDITS_DIR
+    audits_path.mkdir(parents=True, exist_ok=True)
+    audits_dir = str(audits_path)
+
     # Read context
     goal = read_goal(cwd)
     task_detail = read_task(task_id, cwd)
@@ -583,21 +609,30 @@ async def evaluate(
         include_proxy=evaluate_proxy and bool(hybrid_metrics),
         attempt_number=attempt_number,
         previous_scores=previous_scores,
+        audits_dir=audits_dir,
+        previous_adversarial_responses=previous_adversarial_responses,
     )
+
+    # Configure thinking for evaluator (default: 10000 — quality assessment benefits)
+    eval_options = ClaudeAgentOptions(
+        system_prompt=EVALUATOR_SYSTEM_PROMPT,
+        allowed_tools=[
+            "Read", "Write", "Bash", "Glob", "Grep", "LSP",
+            "WebFetch", "WebSearch",
+        ],
+        permission_mode="bypassPermissions",  # Bash needs bypass to run tests/scripts
+        max_turns=25,
+        cwd=cwd,
+        output_format=EVALUATOR_OUTPUT_SCHEMA,
+    )
+    effective = thinking_budget if thinking_budget is not None else 10_000
+    if effective > 0:
+        eval_options.max_thinking_tokens = effective
 
     # Run evaluator
     sr = await stream_query(
         prompt=prompt,
-        options=ClaudeAgentOptions(
-            system_prompt=EVALUATOR_SYSTEM_PROMPT,
-            allowed_tools=[
-                "Read", "Bash", "Glob", "Grep", "LSP",
-                "WebFetch", "WebSearch",
-            ],
-            permission_mode="acceptEdits",
-            max_turns=15,
-            cwd=cwd,
-        ),
+        options=eval_options,
         agent_name="evaluator",
         emoji="📊",
         cwd=cwd,
@@ -607,9 +642,19 @@ async def evaluate(
     result_stats = sr.result_stats
 
     # Parse result for evaluated metrics
-    result = parse_evaluator_output(result_text, metrics_to_eval if metrics_to_eval else metrics)
+    result = parse_evaluator_output(sr.structured_output, result_text, metrics_to_eval if metrics_to_eval else metrics)
     result.task_id = task_id
     result.result_stats = result_stats
+
+    # Validate score consistency with issue severity
+    _validate_score_consistency(result)
+
+    # Warn if evaluator skipped some metrics
+    metrics_expected = len(metrics_to_eval if metrics_to_eval else metrics)
+    if result.metrics_attempted > 0 and result.metrics_attempted < metrics_expected:
+        console.print(
+            f"[yellow]\u26a0 Evaluator evaluated {result.metrics_attempted}/{metrics_expected} metrics[/yellow]"
+        )
 
     # Mark hybrid metrics as pending manual (they have proxy scores but need user testing)
     for mr in result.metrics:
@@ -632,6 +677,17 @@ async def evaluate(
     result.attempt_number = attempt_number
     result.previous_scores = previous_scores or []
 
+    # Read adversarial findings if the evaluator wrote them
+    adversarial_findings_path = audits_path / f"adversarial_{task_id}_{attempt_number}.md"
+    if adversarial_findings_path.exists():
+        findings_content = adversarial_findings_path.read_text()
+        if "No adversarial issues found" not in findings_content:
+            result.adversarial_findings = findings_content
+            result.adversarial_findings_path = str(adversarial_findings_path)
+            console.print(f"[yellow]⚔ Adversarial findings written to {adversarial_findings_path.name}[/yellow]")
+        else:
+            console.print(f"[green]⚔ Adversarial testing: no issues found[/green]")
+
     # Pivot detection: prompt-driven (agent judgment) with code fallback
     # parse_evaluator_output already sets should_pivot from agent output
     # If agent didn't output PIVOT fields (should_pivot still default False
@@ -645,15 +701,31 @@ async def evaluate(
             min_improvement=min_improvement,
         )
 
-    # Write complete evaluation to task file so Planner can see details
+    # Write structured evaluation summary to task file (not full output)
+    # Skip writing eval section for infra failures to avoid polluting task history
     task_content = read_task(task_id, cwd)
-    if task_content:
+    if task_content and not result.is_infra_failure:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         eval_section = f"\n\n## Evaluation ({now})\n\n"
         eval_section += f"**Score**: {result.overall_score:.0f}/100\n"
-        eval_section += f"**Metrics parsed**: {len(result.metrics)}/{len(metrics_to_eval if metrics_to_eval else metrics)}\n\n"
-        eval_section += f"### Evaluator Full Output\n\n{result_text}\n"
+        denominator = result.metrics_attempted if result.metrics_attempted > 0 else len(result.metrics)
+        eval_section += f"**Metrics parsed**: {len(result.metrics)}/{denominator}\n\n"
+        if result.issues:
+            eval_section += "### Issues\n\n"
+            for issue in result.issues:
+                eval_section += f"- {issue}\n"
+        if result.suggestions:
+            eval_section += "\n### Suggestions\n\n"
+            for suggestion in result.suggestions:
+                eval_section += f"- {suggestion}\n"
         write_task(task_id, task_content + eval_section, cwd)
+    elif result.is_infra_failure:
+        console.print("[yellow]⚠ EVAL_INFRA_FAILURE: evaluator did not produce valid output (turn limit?). Not recording to task history.[/yellow]")
+
+    # Save full evaluator output to separate log file
+    eval_log_path = Path(cwd) / RALPH_DIR / "logs" / f"eval_{task_id}_{attempt_number}.md"
+    eval_log_path.parent.mkdir(parents=True, exist_ok=True)
+    eval_log_path.write_text(result_text)
 
     # Display results
     display_evaluation_result(result)
@@ -718,6 +790,9 @@ def get_attempt_history(task_id: str, cwd: str = ".") -> tuple[int, list[float]]
     Only searches within ## Evaluation sections to avoid matching
     scores mentioned in Notes, Description, or other contexts.
 
+    Filters out infra failures (score=0 with 0 metrics parsed) to avoid
+    polluting pivot detection with false signals.
+
     Returns:
         (attempt_number, previous_scores)
     """
@@ -730,8 +805,18 @@ def get_attempt_history(task_id: str, cwd: str = ".") -> tuple[int, list[float]]
     for match in re.finditer(r"## Evaluation\b[^\n]*\n(.*?)(?=\n## |\Z)", task_content, re.DOTALL):
         section = match.group(1)
         score_match = re.search(r"\*\*Score\*\*:\s*(\d+(?:\.\d+)?)/100", section)
-        if score_match:
-            previous_scores.append(float(score_match.group(1)))
+        if not score_match:
+            continue
+        score = float(score_match.group(1))
+
+        # Filter out infra failures: score=0 with 0 metrics parsed
+        # Pattern: **Metrics parsed**: 0/0 or 0/N where score is also 0
+        if score == 0:
+            metrics_match = re.search(r"\*\*Metrics parsed\*\*:\s*0/", section)
+            if metrics_match:
+                continue  # Skip this infra failure entry
+
+        previous_scores.append(score)
 
     attempt_number = len(previous_scores) + 1
 
@@ -796,3 +881,12 @@ def display_evaluation_result(result: EvaluationResult):
         console.print("\n[bold yellow]Suggestions:[/bold yellow]")
         for suggestion in result.suggestions:
             console.print(f"  [yellow]•[/yellow] {suggestion}")
+
+
+def read_adversarial_response(task_id: str, attempt: int, cwd: str = ".") -> Optional[str]:
+    """Read Worker's adversarial response file (rebuttal/fix report).
+
+    Returns the file content if it exists, None otherwise.
+    """
+    path = Path(cwd) / AUDITS_DIR / f"response_{task_id}_{attempt}.md"
+    return path.read_text() if path.exists() else None

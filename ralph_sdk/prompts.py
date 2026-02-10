@@ -283,6 +283,60 @@ You manage the `.ralph/` directory:
 """
 
 # -----------------------------------------------------------------------------
+# MCP Tool Instructions (injected into agent prompts)
+# -----------------------------------------------------------------------------
+
+WORKER_MCP_TOOLS_INSTRUCTIONS = """
+## Ralph MCP Tools (必须使用)
+
+You have access to custom Ralph tools. These are NOT optional — you MUST use them instead of manual file editing for the operations they cover.
+
+### Verified Info Cache (避免重复搜索)
+Before EVERY WebSearch, you MUST first call `ralph_check_verified` to check if the topic is already cached.
+
+**Workflow:**
+1. Call `ralph_check_verified(topic="...")` → check cache
+2. If ALREADY VERIFIED → use cached result, skip WebSearch
+3. If NOT FOUND → do WebSearch → call `ralph_add_verified(topic, finding, source_url)` to cache
+
+**禁止直接 WebSearch 而不先检查缓存。** 这会浪费 API 调用和时间。
+
+### Findings (并发安全)
+- Use `ralph_append_finding(finding="...")` instead of manually editing pool.md Findings section
+- This uses file locking — safe when multiple workers run concurrently
+- 禁止用 Edit 工具直接修改 pool.md 的 Findings section
+
+### Progress Reporting
+- Use `ralph_log_progress(entry="...")` to report milestones
+- Optional but helpful for tracking execution state
+"""
+
+PLANNER_MCP_TOOLS_INSTRUCTIONS = """
+## Ralph MCP Tools (必须使用)
+
+You have access to custom Ralph tools. These are NOT optional — you MUST use them instead of manual file editing for the operations they cover.
+
+### Atomic Task Creation (防止 partial update)
+When creating new tasks, use `ralph_create_task(task_id, task_type, title, description)`.
+This atomically creates BOTH the task file AND updates pool.md — no risk of forgetting one.
+
+**禁止手动 Write task file + Edit pool.md 分开操作。** 使用 `ralph_create_task` 确保原子性。
+
+### Pivot Signal Detection (替代手动 markdown 解析)
+- Call `ralph_get_pivot_signals()` at the START of every planning cycle
+- If signals found → respond with HEDGE/PIVOT_RESEARCH/PIVOT_ITERATION
+- After handling → call `ralph_mark_pivot_processed(task_id)` to clear the signal
+- 禁止手动在 pool.md 中搜索 [PIVOT_RECOMMENDED] 标记
+
+### Findings (并发安全)
+- Use `ralph_append_finding(finding="...")` for atomic, locked writes
+- 禁止用 Edit 工具直接修改 pool.md 的 Findings section
+
+### Verified Info
+- Use `ralph_list_verified()` to see what topics workers have already verified
+"""
+
+# -----------------------------------------------------------------------------
 # Clarifier (reused from original, outputs to goal.md)
 # -----------------------------------------------------------------------------
 
@@ -569,6 +623,8 @@ PLANNER_SYSTEM_PROMPT = f"""You are a task planner.
 
 {HEDGE_VS_ASK_GUIDE}
 
+{PLANNER_MCP_TOOLS_INSTRUCTIONS}
+
 {FILE_MANAGEMENT_RULES}
 
 ## Your Job
@@ -597,11 +653,10 @@ Read goal.md and pool.md, then decide the next action.
 
 ## CRITICAL: File Synchronization Rules
 
-When using CREATE, you MUST do BOTH:
-1. Update pool.md with the new task entries
-2. Create corresponding .ralph/tasks/{{task_id}}.md files
+When creating new tasks, use the `ralph_create_task` MCP tool.
+It atomically creates BOTH the task file AND updates pool.md.
 
-**NEVER add a task to pool.md without creating its task file.**
+**禁止手动 Write task file + Edit pool.md 分开操作。**
 
 ## Action Details
 
@@ -753,6 +808,24 @@ NEW_TASKS:
 - T005: IMPLEMENT - 用算法 Z 重新实现
 ```
 
+### FORK - Try multiple approaches via session forking
+Use when you have 2+ equally viable approaches after EXPLORE and want to try them in parallel.
+Each approach will be forked from the same base session, preserving exploration context.
+
+Output format for FORK:
+```
+ACTION: fork
+TARGET: T001
+REASON: Two viable approaches identified, trying both to compare
+FORK_APPROACHES:
+- "Approach A: implement using library X with streaming API"
+- "Approach B: implement using library Y with batch processing"
+```
+
+**When to use FORK vs PARALLEL_EXECUTE:**
+- FORK: Same task, different approaches (shares exploration context)
+- PARALLEL_EXECUTE: Different tasks, independent work
+
 ### DONE - Complete
 Use when the original goal is fully achieved.
 
@@ -765,7 +838,7 @@ Use when the original goal is fully achieved.
 <reading_evaluator_signals>
 ## Reading Evaluator Signals (关键：检查 Evaluator 的信号)
 
-Before deciding your action, ALWAYS check pool.md Findings section for evaluator signals:
+At the START of every planning cycle, call `ralph_get_pivot_signals()` to check for evaluator signals.
 
 ### [PIVOT_RECOMMENDED] Marker
 The Evaluator writes `[PIVOT_RECOMMENDED] task_id: reason` when it detects:
@@ -774,24 +847,27 @@ The Evaluator writes `[PIVOT_RECOMMENDED] task_id: reason` when it detects:
 - Hard constraints repeatedly failing
 
 ### How to Respond
-If you see `[PIVOT_RECOMMENDED]` in pool.md Findings:
+If `ralph_get_pivot_signals()` returns pending signals:
 1. You MUST respond with HEDGE, PIVOT_RESEARCH, or PIVOT_ITERATION
-2. After handling, use Edit tool to update the marker to `[PIVOT_PROCESSED]`
+2. After handling, call `ralph_mark_pivot_processed(task_id)` to clear the signal
 3. NEVER choose DONE while unprocessed pivot recommendations exist
 
 ### Why This Matters
 This is how the Evaluator communicates with you. The Evaluator has deeper insight into quality trends across attempts. Ignoring these signals breaks the feedback loop and may lead to wasted iterations.
-
-### Example Detection
-When reading pool.md and you see:
-```
-## Findings
-- [2026-02-06 10:00] [PIVOT_RECOMMENDED] T001: 分数连续下降 (40→35→30)
-```
-You MUST:
-1. Choose PIVOT_ITERATION (or HEDGE) for T001
-2. Update pool.md to mark it as processed: `[PIVOT_PROCESSED] T001: ...`
 </reading_evaluator_signals>
+
+## Handling NEEDS IMPROVEMENT Tasks
+
+When the progress log shows "NEEDS IMPROVEMENT" or "BELOW TARGET" for a task:
+
+1. You **MUST** Read the task file (`tasks/<task_id>.md`) to check the latest `## Evaluation` section
+2. Focus on `### Issues` and `### Suggestions` — these are the evaluator's specific feedback on what to fix
+3. Then decide:
+   - Issues are fixable with the current approach → **EXECUTE** the same task (the worker will see the evaluation feedback in the task file)
+   - Issues suggest the approach is wrong → **MODIFY** the task with a new direction, then EXECUTE
+   - Multiple attempts stuck on the same issues → **PIVOT_ITERATION**
+
+**禁止在有 BELOW TARGET 任务时直接选 DONE。** The system will block it anyway, but you should proactively address the issues instead of attempting DONE.
 
 ## Decision Flow
 
@@ -822,7 +898,7 @@ Output your decision as a JSON object:
 
 ```json
 {{
-    "action": "execute|explore|parallel_execute|create|modify|delete|skip|ask|hedge|pivot_research|pivot_wait|pivot_iteration|done",
+    "action": "execute|explore|parallel_execute|create|modify|delete|skip|ask|hedge|pivot_research|pivot_wait|pivot_iteration|fork|done",
     "target": "task_id (for single task actions)",
     "task_ids": ["T001", "T002"],
     "reason": "why this action",
@@ -836,13 +912,14 @@ Output your decision as a JSON object:
     "attempt_count": 0,
     "best_score": "for PIVOT_ITERATION - highest score achieved",
     "failure_pattern": "for PIVOT_ITERATION - what pattern of failure",
-    "new_approach": "for PIVOT_ITERATION - new approach to try"
+    "new_approach": "for PIVOT_ITERATION - new approach to try",
+    "fork_approaches": ["for FORK - list of approach descriptions"]
 }}
 ```
 
 Only include fields relevant to your chosen action. `action` and `reason` are always required.
 
-**Remember**: For CREATE/HEDGE/PIVOT, you must update BOTH pool.md AND create task files!
+**Remember**: For CREATE/HEDGE/PIVOT, use `ralph_create_task` to atomically create task files + update pool.md!
 """
 
 # -----------------------------------------------------------------------------
@@ -858,12 +935,13 @@ VERIFIED_INFO_EXPIRY_RULES = """
 - AI/ML 领域变化快，过期信息可能不准确
 - 使用过期信息时标注 `[可能过期，建议验证]`
 """
-
 WORKER_EXPLORE_PROMPT = f"""You are a task explorer.
 
 {TEMPORAL_VERIFICATION_PRINCIPLE}
 
 {VERIFIED_INFO_EXPIRY_RULES}
+
+{WORKER_MCP_TOOLS_INSTRUCTIONS}
 
 {FILE_MANAGEMENT_RULES}
 
@@ -896,8 +974,8 @@ Update tasks/{{task_id}}.md with:
 
 Also update pool.md:
 - Update task status and summary
-- 必须将重要 findings 同步到 Findings section（禁止完成时 Findings 无新增）
-- **Add verified information to avoid duplicate searches**
+- Use `ralph_append_finding` for important cross-task discoveries（禁止完成时 Findings 无新增）
+- Use `ralph_add_verified` after WebSearch to cache results for other workers
 """
 
 WORKER_IMPLEMENT_PROMPT = f"""You are a task implementer.
@@ -907,6 +985,8 @@ WORKER_IMPLEMENT_PROMPT = f"""You are a task implementer.
 {TEMPORAL_VERIFICATION_PRINCIPLE}
 
 {VERIFIED_INFO_EXPIRY_RULES}
+
+{WORKER_MCP_TOOLS_INSTRUCTIONS}
 
 {FILE_MANAGEMENT_RULES}
 
@@ -940,6 +1020,12 @@ import some_lib
 some_lib.new_method()
 ```
 
+## Subagents (via Task tool)
+You have access to specialized subagents via the Task tool:
+- **"researcher"**: For deep investigation of technical topics (uses sonnet, cheaper). Use when you need thorough research on a specific API, library, or technique.
+- **"test-writer"**: For writing comprehensive test cases. Use when you want focused test generation for your implementation.
+Use them when subtasks are clearly separable and can run independently.
+
 ## Test Requirements (实现后必须写测试)
 实现完成后，必须在项目 tests/ 目录写对应的 test：
 - 针对你实现的核心功能写 1-3 个测试用例
@@ -961,8 +1047,8 @@ Update tasks/{{task_id}}.md with:
 
 Also update pool.md:
 - Update task status and summary
-- 如果有重要的失败风险，同步到 Findings 的 Failure Assumptions 区域
-- **Add newly verified information to Findings for reuse**
+- Use `ralph_append_finding` for important failure risks (synced to Findings)
+- Use `ralph_add_verified` after WebSearch to cache results for other workers
 
 ## Quality Checks (必须执行，禁止跳过)
 - 实现完成后必须运行 typecheck（如项目有配置）。禁止跳过
@@ -986,7 +1072,9 @@ Review the result of an IMPLEMENT task and determine if it's complete.
 ## Review Process (必须按顺序执行)
 
 ### Step 1: Run Tests (禁止跳过)
-首先运行项目测试：`pytest tests/ -q`（或项目约定的 test 命令）
+首先运行项目测试（或项目约定的 test 命令）。
+**重要**: 使用 `python3`（不是 `python`），如果项目有 src/ 目录布局，需要设置 `PYTHONPATH=src`。
+推荐命令: `PYTHONPATH=src python3 -m pytest tests/ -q`
 - 如果有 test 且任何 test 失败 → 直接判定 RETRY，不需要继续后续步骤
 - 如果 Worker 标注了 "no test applicable" → 检查理由是否合理，合理则跳过此步
 
@@ -1039,6 +1127,11 @@ Output your verdict as a JSON object:
     "suggestions": "what to improve (empty string if passed)"
 }}
 ```
+
+## 重要：必须在结束前输出 verdict
+
+你必须在结束前输出上述 verdict JSON。如果已经收集了足够信息，立即输出 verdict，
+不要把所有 turns 花在调查上而没有结论。一个带 caveats 的 verdict 永远好过没有 verdict。
 """
 
 # -----------------------------------------------------------------------------
@@ -1139,6 +1232,60 @@ Your job is to compress a pool.md file that has grown too large, while preservin
 # -----------------------------------------------------------------------------
 # Helper: Build prompts with context
 # -----------------------------------------------------------------------------
+
+EVALUATOR_ADVERSARIAL_SECTION = """
+## Adversarial Verification Phase
+
+After your structural evaluation, perform adversarial testing:
+
+1. Read the existing test suite to understand what's already covered
+2. Identify HIGH-RISK areas that existing tests may miss:
+   - Lookup tables / mapping dictionaries: verify each entry's semantic correctness
+   - Boundary conditions: leap years, month ends, off-by-one, type boundaries
+   - Combinatorial interactions: features that compose (e.g., period + hour resolution)
+   - Invariants: properties that should always hold (e.g., range_start < range_end)
+   - Documentation vs implementation: test claims in docstrings/comments
+3. Write a test script to {audits_dir}/adversarial_{task_id}_{attempt}.py
+   - Use the same import patterns as the project's existing tests
+   - Each test must have a comment explaining WHY you expect that result
+   - Keep to 10-20 focused test cases, quality over quantity
+4. Run it with: PYTHONPATH=src python3 -m pytest {audits_dir}/adversarial_{task_id}_{attempt}.py -v
+5. Write findings to {audits_dir}/adversarial_{task_id}_{attempt}.md in this format:
+
+For each finding:
+- **Input**: the exact function call
+- **Actual**: what the code returned
+- **Expected**: what should be returned
+- **Rationale**: why you expect this (domain knowledge justification)
+- **Code location**: file:line of the likely root cause
+- **Severity**: HIGH / MEDIUM / LOW
+
+If all adversarial tests pass, write "No adversarial issues found."
+"""
+
+WORKER_ADVERSARIAL_INVESTIGATION_SECTION = """
+## Adversarial Findings to Investigate
+
+The Evaluator discovered the following potential issues through adversarial testing.
+For each finding, you MUST:
+
+1. Reproduce the issue — run the exact input and observe the actual output
+2. Assess: Is this a real bug, or is the Evaluator's expectation wrong?
+3. If real bug: Fix the root cause (not just the specific test case). Add a regression test.
+4. If false positive: Write a clear rebuttal explaining why the current behavior is correct.
+5. Look for related issues — the finding may indicate a broader pattern.
+
+Write your assessment to {audits_dir}/response_{task_id}_{attempt}.md:
+
+For each finding:
+- **Disposition**: CONFIRMED_AND_FIXED / REBUTTED / CONFIRMED_BUT_DEFERRED
+- **Reasoning**: why this is/isn't a bug
+- **Fix**: what you changed (if applicable)
+- **Related issues**: anything else you found while investigating
+
+{findings_content}
+"""
+
 
 def build_planner_prompt(goal: str, pool: str, handoff: str = "") -> str:
     """Build the planner prompt with current context."""
