@@ -4,7 +4,7 @@ Main orchestrator: runs the task pool loop.
 Flow:
 1. Clarify -> goal.md
 2. Initialize -> pool.md + tasks/
-3. Loop: Planner -> Worker -> (Reviewer) -> update files
+3. Loop: Planner -> Worker -> Evaluator -> update files
 """
 
 import asyncio
@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from .clarifier import clarify_requirements, clarify_requirements_v2, quick_clarify
-from .evaluator import evaluate, get_attempt_history, read_adversarial_response
+from .evaluator import _detect_cosmetic_only, evaluate, get_attempt_history, read_adversarial_response
 from .logger import SessionLogger, archive_session, format_duration, format_tokens, log_tool_call, stream_query
 from .notification import (
     notify_checkpoint,
@@ -31,7 +31,7 @@ from .notification import (
     notify_progress,
     notify_warning,
 )
-from .planner import Action, plan
+from .planner import Action, PlannerDecision, plan
 from .pool import (
     Checkpoint,
     add_checkpoint,
@@ -67,7 +67,6 @@ from .pool import (
     write_task,
 )
 from .prompts import INITIALIZER_SYSTEM_PROMPT
-from .reviewer import ReviewResult, Verdict, review
 from .worker import work
 
 console = Console()
@@ -557,8 +556,15 @@ async def run(
     console.print("\n[bold]Phase 3: Executing tasks[/bold]\n")
 
     consecutive_skips = 0
-    review_failure_count: dict[str, int] = {}  # task_id → consecutive review failures
-    MAX_REVIEW_RETRIES = 3
+
+    # Auto-continue: skip planner when last eval passed but below target (Exp 3)
+    last_iter_state: dict = {}  # {action, verdict, score, task_id, should_pivot}
+
+    # Adversarial skip: skip adversarial testing after consecutive clean rounds (Exp 4)
+    adversarial_clean_count: dict[str, int] = {}  # task_id → consecutive clean rounds
+
+    # Cosmetic stagnation: terminate when consecutive cosmetic-only rounds (Improvement 3)
+    cosmetic_stagnation_count: dict[str, int] = {}  # task_id → consecutive cosmetic-only rounds
 
     for i in range(1, max_iterations + 1):
         # Build cumulative stats for iteration header
@@ -589,13 +595,35 @@ async def run(
             except Exception as e:
                 console.print(f"[dim]📦 Compaction failed (non-critical): {e}[/dim]")
 
-        # Planner decides next action
-        console.print("[yellow]Planner deciding...[/yellow]")
-        decision = await plan(cwd, verbose=verbose, explore_mode=explore_mode, thinking_budget=thinking_budget)
+        # Auto-continue: skip planner when last eval passed but below target (Exp 3)
+        auto_continue = (
+            last_iter_state.get("action") == "execute"
+            and last_iter_state.get("verdict") == "passed"
+            and last_iter_state.get("score", 0) < target_score
+            and not last_iter_state.get("should_pivot", False)
+        )
 
-        # Log planner stats
-        if decision.result_stats:
-            logger.log_query_stats(decision.result_stats)
+        if auto_continue:
+            task_id = last_iter_state["task_id"]
+            console.print(f"[dim]⏭ Auto-continue: {task_id} score {last_iter_state['score']:.0f} < {target_score}[/dim]")
+            decision = PlannerDecision(
+                action=Action.EXECUTE,
+                target=task_id,
+                reason=f"Auto-continue: score {last_iter_state['score']:.0f}/{target_score}",
+            )
+            logger.log_planner_decision(
+                action=decision.action.value,
+                target=decision.target,
+                reason=decision.reason,
+            )
+        else:
+            # Planner decides next action
+            console.print("[yellow]Planner deciding...[/yellow]")
+            decision = await plan(cwd, verbose=verbose, explore_mode=explore_mode, thinking_budget=thinking_budget)
+
+            # Log planner stats
+            if decision.result_stats:
+                logger.log_query_stats(decision.result_stats)
 
         console.print(f"[bold]Action:[/bold] {decision.action.value}")
         if decision.target:
@@ -604,16 +632,20 @@ async def run(
             console.print(f"[bold]Tasks:[/bold] {', '.join(decision.task_ids)}")
         console.print(f"[bold]Reason:[/bold] {decision.reason}")
 
-        # Log planner decision
-        logger.log_planner_decision(
-            action=decision.action.value,
-            target=decision.target,
-            reason=decision.reason,
-        )
+        if not auto_continue:
+            logger.log_planner_decision(
+                action=decision.action.value,
+                target=decision.target,
+                reason=decision.reason,
+            )
 
         # Reset consecutive skip counter for non-SKIP actions
         if decision.action != Action.SKIP:
             consecutive_skips = 0
+
+        # Reset last_iter_state for non-EXECUTE actions (Exp 3)
+        if decision.action != Action.EXECUTE:
+            last_iter_state = {}
 
         # Handle DONE
         if decision.action == Action.DONE:
@@ -761,25 +793,6 @@ async def run(
                         error=task_result.error,
                     )
 
-                # Review successful IMPLEMENT tasks
-                for task_result in parallel_result.results:
-                    if task_result.success and task_result.task_type == "IMPLEMENT":
-                        console.print(f"\n[dim]Reviewing {task_result.task_id}...[/dim]")
-                        try:
-                            review_result = await review(task_result.task_id, cwd, verbose=verbose, thinking_budget=thinking_budget)
-                            console.print(f"[dim]{task_result.task_id} review: {review_result.verdict.value}[/dim]")
-                            logger.log_reviewer_verdict(
-                                task_id=task_result.task_id,
-                                verdict=review_result.verdict.value,
-                                reason=review_result.reason,
-                                tool_calls=review_result.tool_count,
-                            )
-                            # Note: For simplicity, we log but don't handle RETRY/FAILED here
-                            # The Planner will see the review results in task files and decide next steps
-                        except Exception as e:
-                            console.print(f"[red]Review failed for {task_result.task_id}: {e}[/red]")
-                            logger.log_error(f"Review failed for {task_result.task_id}: {e}")
-
                 # Log aggregate result
                 status_parts = []
                 for task_result in parallel_result.results:
@@ -849,6 +862,9 @@ async def run(
                 logger.log_error("EXECUTE requires a target task")
                 continue
 
+            # Auto-state tracking for auto-continue (Exp 3)
+            _exec_auto_state: dict = {}
+
             console.print(f"\n[yellow]Executing {decision.target}...[/yellow]\n")
 
             # Read adversarial findings from the most recent evaluation (if any)
@@ -884,60 +900,45 @@ async def run(
             )
 
             if result.success:
-                console.print(f"[green]✓ Execution complete, reviewing...[/green]\n")
+                console.print(f"[green]✓ Execution complete, evaluating...[/green]\n")
 
-                # Review the result with exception handling
-                try:
-                    review_result = await review(decision.target, cwd, verbose=verbose, thinking_budget=thinking_budget)
-                except Exception as e:
-                    console.print(f"[red]Review failed: {e}[/red]")
-                    logger.log_error(f"Review failed for {decision.target}: {e}")
-                    review_result = ReviewResult(
-                        verdict=Verdict.RETRY,
-                        reason=f"Review failed with error: {e}",
-                    )
+                # Skip reviewer — go directly to Evaluator
+                # (Worker's prompt already requires tests to pass before claiming done;
+                #  Evaluator runs pytest + checks all acceptance criteria)
 
-                # Track consecutive review failures per task (I/O layer protection)
-                if review_result.verdict in (Verdict.RETRY, Verdict.FAILED):
-                    review_failure_count[decision.target] = review_failure_count.get(decision.target, 0) + 1
-                    if review_failure_count[decision.target] >= MAX_REVIEW_RETRIES:
-                        console.print(f"[red]✗ Task {decision.target} failed {MAX_REVIEW_RETRIES} consecutive reviews, degrading to FAILED[/red]")
-                        review_result = ReviewResult(
-                            verdict=Verdict.FAILED,
-                            reason=f"Degraded to FAILED after {MAX_REVIEW_RETRIES} consecutive review failures. Last: {review_result.reason}",
-                        )
-                else:
-                    review_failure_count.pop(decision.target, None)
+                # Run quality evaluation
+                console.print(f"\n[yellow]Evaluating quality...[/yellow]")
 
-                # Log reviewer stats
-                if review_result.result_stats:
-                    logger.log_query_stats(review_result.result_stats)
+                # Get attempt history for pivot detection
+                attempt_number, previous_scores = get_attempt_history(decision.target, cwd)
 
-                console.print(f"[bold]Review verdict:[/bold] {review_result.verdict.value}")
-                console.print(f"[dim]{review_result.reason}[/dim]")
+                # Read Worker's adversarial response from previous round (if any)
+                prev_adv_response = read_adversarial_response(
+                    decision.target, attempt_number - 1, cwd
+                ) if attempt_number > 1 else None
 
-                # Log reviewer verdict
-                logger.log_reviewer_verdict(
-                    task_id=decision.target,
-                    verdict=review_result.verdict.value,
-                    reason=review_result.reason,
-                    tool_calls=review_result.tool_count,
+                # Skip adversarial testing if 2+ consecutive clean rounds (Exp 4)
+                skip_adv = adversarial_clean_count.get(decision.target, 0) >= 2
+                if skip_adv:
+                    console.print(f"[dim]⏭ Skipping adversarial testing ({adversarial_clean_count[decision.target]} consecutive clean rounds)[/dim]")
+
+                eval_result = await evaluate(
+                    decision.target,
+                    cwd=cwd,
+                    verbose=verbose,
+                    previous_scores=previous_scores,
+                    attempt_number=attempt_number,
+                    thinking_budget=thinking_budget,
+                    previous_adversarial_responses=prev_adv_response,
+                    skip_adversarial=skip_adv,
                 )
 
-                if review_result.verdict == Verdict.PASSED:
-                    # Run quality evaluation
-                    # Evaluator reads goal.md directly and extracts metrics from
-                    # the Success Metrics section via prompt (no code parsing needed)
-                    console.print(f"\n[yellow]Evaluating quality...[/yellow]")
-
-                    # Get attempt history for pivot detection
-                    attempt_number, previous_scores = get_attempt_history(decision.target, cwd)
-
-                    # Read Worker's adversarial response from previous round (if any)
-                    prev_adv_response = read_adversarial_response(
-                        decision.target, attempt_number - 1, cwd
-                    ) if attempt_number > 1 else None
-
+                # Auto-retry on infra failure (up to 2 retries)
+                MAX_EVAL_RETRIES = 2
+                eval_retry = 0
+                while eval_result.is_infra_failure and eval_retry < MAX_EVAL_RETRIES:
+                    eval_retry += 1
+                    console.print(f"[yellow]⚠ EVAL_INFRA_FAILURE detected, retrying evaluation ({eval_retry}/{MAX_EVAL_RETRIES})...[/yellow]")
                     eval_result = await evaluate(
                         decision.target,
                         cwd=cwd,
@@ -946,206 +947,178 @@ async def run(
                         attempt_number=attempt_number,
                         thinking_budget=thinking_budget,
                         previous_adversarial_responses=prev_adv_response,
+                        skip_adversarial=skip_adv,
                     )
 
-                    # Auto-retry on infra failure (up to 2 retries, no worker/reviewer needed)
-                    MAX_EVAL_RETRIES = 2
-                    eval_retry = 0
-                    while eval_result.is_infra_failure and eval_retry < MAX_EVAL_RETRIES:
-                        eval_retry += 1
-                        console.print(f"[yellow]⚠ EVAL_INFRA_FAILURE detected, retrying evaluation ({eval_retry}/{MAX_EVAL_RETRIES})...[/yellow]")
-                        eval_result = await evaluate(
-                            decision.target,
-                            cwd=cwd,
-                            verbose=verbose,
-                            previous_scores=previous_scores,
-                            attempt_number=attempt_number,
-                            thinking_budget=thinking_budget,
-                            previous_adversarial_responses=prev_adv_response,
-                        )
+                # Update adversarial clean count (Exp 4)
+                if eval_result.adversarial_findings:
+                    adversarial_clean_count[decision.target] = 0
+                else:
+                    adversarial_clean_count[decision.target] = adversarial_clean_count.get(decision.target, 0) + 1
 
-                    # Log evaluator stats
-                    if eval_result.result_stats:
-                        logger.log_query_stats(eval_result.result_stats)
+                # Log evaluator stats
+                if eval_result.result_stats:
+                    logger.log_query_stats(eval_result.result_stats)
 
-                    # Log evaluation (mark infra failures distinctly)
-                    if eval_result.is_infra_failure:
-                        logger.log_evaluation(
-                            task_id=decision.target,
-                            passed=False,
-                            score=0,
-                            issues=["EVAL_INFRA_FAILURE: evaluator did not produce valid output after retries"],
-                        )
-                        console.print(f"[red]✗ EVAL_INFRA_FAILURE: evaluator failed to produce output after {MAX_EVAL_RETRIES} retries[/red]")
-                        append_to_progress_log(
-                            f"EXECUTE {decision.target} - EVAL_INFRA_FAILURE (evaluator did not produce output, skipping this evaluation)",
-                            cwd
-                        )
-                        logger.log_iteration_end(i, decision.action.value, success=True)
-                        continue
-                    else:
-                        logger.log_evaluation(
-                            task_id=decision.target,
-                            passed=eval_result.overall_passed,
-                            score=eval_result.overall_score,
-                            issues=eval_result.issues,
-                        )
-
-                    # P0: If Evaluator suggests pivot, write to pool.md for Planner to see
-                    # (never write pivot for infra failures — already handled above)
-                    if eval_result.should_pivot:
-                        append_to_findings(
-                            f"**[PIVOT_RECOMMENDED]** {decision.target}: {eval_result.pivot_reason}",
-                            cwd
-                        )
-                        console.print(f"[yellow]⚠️ Evaluator 建议转向: {eval_result.pivot_reason}[/yellow]")
-
-                    # Check if user testing is needed
-                    if eval_result.needs_user_testing:
-                        eval_config = read_eval_config_from_goal(cwd)
-                        pending_metrics = eval_result.get_pending_manual_metrics()
-
-                        # Create checkpoint with proper structure
-                        checkpoint = create_checkpoint(
-                            task_id=decision.target,
-                            path=f"checkpoints/{decision.target}",
-                            artifact_type="code",
-                            description=f"Implementation of {decision.target}",
-                            cwd=cwd,
-                        )
-
-                        # Add proxy scores from evaluation
-                        for mr in eval_result.metrics:
-                            if mr.proxy_score is not None:
-                                checkpoint.add_proxy_score(
-                                    metric_name=mr.metric.name,
-                                    score=mr.proxy_score,
-                                    target=mr.metric.target,
-                                    notes=mr.proxy_notes,
-                                )
-                            elif not mr.pending_manual and mr.score is not None:
-                                # Also add auto-evaluated scores as reference
-                                checkpoint.add_proxy_score(
-                                    metric_name=mr.metric.name,
-                                    score=mr.score,
-                                    target=mr.metric.target,
-                                    notes="Auto-evaluated",
-                                )
-
-                        # Generate test instructions
-                        instructions = "请测试以下指标:\n"
-                        for mr in pending_metrics:
-                            instructions += f"- {mr.metric.name}: {mr.metric.description}\n"
-                            if mr.metric.target:
-                                instructions += f"  目标: {mr.metric.target}\n"
-                            if mr.proxy_score is not None:
-                                instructions += f"  代理分数: {mr.proxy_score:.0f}\n"
-
-                        # Decide whether to pause based on batch preference
-                        batch_pref = eval_config.get("batch_preference", "")
-
-                        # Always add checkpoint first
-                        add_checkpoint(checkpoint, cwd)
-
-                        if "一个一个" in batch_pref or not batch_pref:
-                            # Mark as pending test but DON'T pause
-                            # Let the Planner decide to HEDGE or continue
-                            mark_pending_test(decision.target, cwd)
-
-                            # Use notification system (non-blocking)
-                            notify_checkpoint(
-                                checkpoint_id=checkpoint.id,
-                                task_id=decision.target,
-                                proxy_score=checkpoint.proxy_overall,
-                                description=f"{len(pending_metrics)} 项指标待用户测试",
-                            )
-
-                            # Don't return False - let the loop continue
-                            # The Planner will decide whether to HEDGE or do other work
-                        else:
-                            # For batch mode, use notification
-                            notify_checkpoint(
-                                checkpoint_id=checkpoint.id,
-                                task_id=decision.target,
-                                proxy_score=checkpoint.proxy_overall,
-                                description=f"{len(pending_metrics)} 项指标待批量测试",
-                            )
-
-                        # Check if we've accumulated enough for batch testing
-                        pending = get_pending_checkpoints(cwd)
-                        batch_size = int(eval_config.get("batch_size", 3) or 3)
-                        if len(pending) >= batch_size:
-                            console.print(f"\n[yellow]Batch size reached ({len(pending)} checkpoints)[/yellow]")
-                            enter_waiting_state(
-                                checkpoints=pending,
-                                instructions=instructions,
-                                cwd=cwd,
-                            )
-                            generate_handoff_note(cwd)  # Save state for resume
-                            logger.log_session_end(success=False, reason=f"Waiting for batch testing ({len(pending)} checkpoints)")
-                            return False
-
-                    if eval_result.overall_passed and eval_result.overall_score >= target_score:
-                        console.print(f"[green]✓ Task {decision.target} completed (score: {eval_result.overall_score:.0f}/{target_score})[/green]")
-                        append_to_progress_log(
-                            f"EXECUTE {decision.target} - PASSED (score: {eval_result.overall_score:.0f}/{target_score})",
-                            cwd
-                        )
-                    else:
-                        # Task passed functionally but quality needs improvement
-                        console.print(f"[yellow]⚠ Task {decision.target} needs improvement (score: {eval_result.overall_score:.0f}/{target_score})[/yellow]")
-
-                        # Evaluator already wrote full evaluation to task file
-
-                        append_to_progress_log(
-                            f"EXECUTE {decision.target} - NEEDS IMPROVEMENT "
-                            f"(score: {eval_result.overall_score:.0f}/{target_score} — BELOW TARGET, "
-                            f"metrics_found: {len(eval_result.metrics)}, "
-                            f"details in tasks/{decision.target}.md)",
-                            cwd
-                        )
-                elif review_result.verdict == Verdict.RETRY:
-                    console.print(f"[yellow]↻ Task {decision.target} needs retry[/yellow]")
-
-                    # Write review feedback to task file for next attempt
-                    task_content = read_task(decision.target, cwd)
-                    if task_content:
-                        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        review_note = f"\n\n## Review Feedback ({now})\n"
-                        review_note += f"**Verdict**: RETRY\n"
-                        review_note += f"**Reason**: {review_result.reason}\n"
-                        if review_result.suggestions:
-                            review_note += f"**Suggestions**: {review_result.suggestions}\n"
-                        write_task(decision.target, task_content + review_note, cwd)
-
+                # Log evaluation (mark infra failures distinctly)
+                if eval_result.is_infra_failure:
+                    logger.log_evaluation(
+                        task_id=decision.target,
+                        passed=False,
+                        score=0,
+                        issues=["EVAL_INFRA_FAILURE: evaluator did not produce valid output after retries"],
+                    )
+                    console.print(f"[red]✗ EVAL_INFRA_FAILURE: evaluator failed to produce output after {MAX_EVAL_RETRIES} retries[/red]")
                     append_to_progress_log(
-                        f"EXECUTE {decision.target} - RETRY: {review_result.reason}",
+                        f"EXECUTE {decision.target} - EVAL_INFRA_FAILURE (evaluator did not produce output, skipping this evaluation)",
                         cwd
                     )
-                else:  # FAILED
-                    console.print(f"[red]✗ Task {decision.target} failed[/red]")
+                    logger.log_iteration_end(i, decision.action.value, success=True)
+                    continue
+                else:
+                    logger.log_evaluation(
+                        task_id=decision.target,
+                        passed=eval_result.overall_passed,
+                        score=eval_result.overall_score,
+                        issues=eval_result.issues,
+                    )
 
-                    # Write review feedback to task file for Planner to see
-                    task_content = read_task(decision.target, cwd)
-                    if task_content:
-                        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        review_note = f"\n\n## Review Feedback ({now})\n"
-                        review_note += f"**Verdict**: FAILED\n"
-                        review_note += f"**Reason**: {review_result.reason}\n"
-                        if review_result.suggestions:
-                            review_note += f"**Suggestions**: {review_result.suggestions}\n"
-                        write_task(decision.target, task_content + review_note, cwd)
-
-                    append_to_progress_log(
-                        f"EXECUTE {decision.target} - FAILED: {review_result.reason}",
+                # P0: If Evaluator suggests pivot, write to pool.md for Planner to see
+                if eval_result.should_pivot:
+                    append_to_findings(
+                        f"**[PIVOT_RECOMMENDED]** {decision.target}: {eval_result.pivot_reason}",
                         cwd
                     )
+                    console.print(f"[yellow]⚠️ Evaluator 建议转向: {eval_result.pivot_reason}[/yellow]")
+
+                # Check if user testing is needed
+                if eval_result.needs_user_testing:
+                    eval_config = read_eval_config_from_goal(cwd)
+                    pending_metrics = eval_result.get_pending_manual_metrics()
+
+                    # Create checkpoint with proper structure
+                    checkpoint = create_checkpoint(
+                        task_id=decision.target,
+                        path=f"checkpoints/{decision.target}",
+                        artifact_type="code",
+                        description=f"Implementation of {decision.target}",
+                        cwd=cwd,
+                    )
+
+                    # Add proxy scores from evaluation
+                    for mr in eval_result.metrics:
+                        if mr.proxy_score is not None:
+                            checkpoint.add_proxy_score(
+                                metric_name=mr.metric.name,
+                                score=mr.proxy_score,
+                                target=mr.metric.target,
+                                notes=mr.proxy_notes,
+                            )
+                        elif not mr.pending_manual and mr.score is not None:
+                            checkpoint.add_proxy_score(
+                                metric_name=mr.metric.name,
+                                score=mr.score,
+                                target=mr.metric.target,
+                                notes="Auto-evaluated",
+                            )
+
+                    # Generate test instructions
+                    instructions = "请测试以下指标:\n"
+                    for mr in pending_metrics:
+                        instructions += f"- {mr.metric.name}: {mr.metric.description}\n"
+                        if mr.metric.target:
+                            instructions += f"  目标: {mr.metric.target}\n"
+                        if mr.proxy_score is not None:
+                            instructions += f"  代理分数: {mr.proxy_score:.0f}\n"
+
+                    # Decide whether to pause based on batch preference
+                    batch_pref = eval_config.get("batch_preference", "")
+
+                    # Always add checkpoint first
+                    add_checkpoint(checkpoint, cwd)
+
+                    if "一个一个" in batch_pref or not batch_pref:
+                        mark_pending_test(decision.target, cwd)
+                        notify_checkpoint(
+                            checkpoint_id=checkpoint.id,
+                            task_id=decision.target,
+                            proxy_score=checkpoint.proxy_overall,
+                            description=f"{len(pending_metrics)} 项指标待用户测试",
+                        )
+                    else:
+                        notify_checkpoint(
+                            checkpoint_id=checkpoint.id,
+                            task_id=decision.target,
+                            proxy_score=checkpoint.proxy_overall,
+                            description=f"{len(pending_metrics)} 项指标待批量测试",
+                        )
+
+                    # Check if we've accumulated enough for batch testing
+                    pending = get_pending_checkpoints(cwd)
+                    batch_size = int(eval_config.get("batch_size", 3) or 3)
+                    if len(pending) >= batch_size:
+                        console.print(f"\n[yellow]Batch size reached ({len(pending)} checkpoints)[/yellow]")
+                        enter_waiting_state(
+                            checkpoints=pending,
+                            instructions=instructions,
+                            cwd=cwd,
+                        )
+                        generate_handoff_note(cwd)  # Save state for resume
+                        logger.log_session_end(success=False, reason=f"Waiting for batch testing ({len(pending)} checkpoints)")
+                        return False
+
+                # Cosmetic stagnation termination (Improvement 3)
+                is_cosmetic = _detect_cosmetic_only(eval_result.issues)
+                if is_cosmetic and eval_result.overall_score >= 90:
+                    cosmetic_stagnation_count[decision.target] = cosmetic_stagnation_count.get(decision.target, 0) + 1
+                else:
+                    cosmetic_stagnation_count[decision.target] = 0
+
+                cosmetic_stagnated = cosmetic_stagnation_count.get(decision.target, 0) >= 2
+
+                if cosmetic_stagnated:
+                    console.print(f"[green]✓ Task {decision.target} accepted despite cosmetic issues "
+                                  f"(score: {eval_result.overall_score:.0f}, {cosmetic_stagnation_count[decision.target]} consecutive cosmetic-only rounds)[/green]")
+                    append_to_progress_log(
+                        f"EXECUTE {decision.target} - COSMETIC_STAGNATION_ACCEPTED "
+                        f"(score: {eval_result.overall_score:.0f}/{target_score}, cosmetic-only issues for {cosmetic_stagnation_count[decision.target]} rounds)",
+                        cwd
+                    )
+                elif eval_result.overall_passed and eval_result.overall_score >= target_score:
+                    console.print(f"[green]✓ Task {decision.target} completed (score: {eval_result.overall_score:.0f}/{target_score})[/green]")
+                    append_to_progress_log(
+                        f"EXECUTE {decision.target} - PASSED (score: {eval_result.overall_score:.0f}/{target_score})",
+                        cwd
+                    )
+                else:
+                    console.print(f"[yellow]⚠ Task {decision.target} needs improvement (score: {eval_result.overall_score:.0f}/{target_score})[/yellow]")
+                    append_to_progress_log(
+                        f"EXECUTE {decision.target} - NEEDS IMPROVEMENT "
+                        f"(score: {eval_result.overall_score:.0f}/{target_score} — BELOW TARGET, "
+                        f"metrics_found: {len(eval_result.metrics)}, "
+                        f"details in tasks/{decision.target}.md)",
+                        cwd
+                    )
+
+                # Record state for auto-continue on next iteration (Exp 3)
+                _exec_auto_state = {
+                    "action": "execute",
+                    "task_id": decision.target,
+                    "verdict": "passed",
+                    "score": eval_result.overall_score,
+                    "should_pivot": eval_result.should_pivot,
+                }
+
             else:
                 console.print(f"[red]✗ Execution failed: {result.error}[/red]")
                 append_to_progress_log(
                     f"EXECUTE {decision.target} - ERROR: {result.error}",
                     cwd
                 )
+
+            # Update last_iter_state for auto-continue tracking (Exp 3)
+            last_iter_state = _exec_auto_state
+
             logger.log_iteration_end(i, decision.action.value, success=result.success)
             continue
 

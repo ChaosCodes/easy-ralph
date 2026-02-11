@@ -522,6 +522,9 @@ Given a goal (from goal.md), create a MINIMAL initial Task Pool.
 2. If there's ANY uncertainty → start with just ONE EXPLORE task
 3. Keep tasks vague/high-level - details will emerge during execution
 4. Don't decompose prematurely - let Planner do that later
+5. Do NOT create separate "write tests" or "verify metrics" tasks.
+   Worker IMPLEMENT tasks already include writing tests.
+   Test verification is the Evaluator's responsibility.
 
 ## When to create what:
 

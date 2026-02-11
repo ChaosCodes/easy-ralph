@@ -52,6 +52,8 @@ EVALUATOR_OUTPUT_SCHEMA = {
             "overall_score": {"type": "number"},
             "pivot_recommended": {"type": "boolean"},
             "pivot_reason": {"type": "string"},
+            "only_cosmetic": {"type": "boolean"},
+            "issue_completeness": {"type": "string"},
         },
         "required": ["metrics", "overall_score"],
     },
@@ -284,6 +286,17 @@ When the prompt includes an "Attempt History" section, you MUST assess whether t
 - Output your judgment in PIVOT_RECOMMENDED and PIVOT_REASON fields
 - You do NOT need to write any files — the system handles propagation automatically
 
+## Temporal Verification Check (from Reviewer)
+
+As part of your evaluation, check for unverified time-sensitive information:
+1. Does the implementation use external APIs/libraries with specific versions but no verification source?
+2. Are there API usage patterns without `[已搜索验证]` annotation?
+3. Are there assumptions about "current best practices" that may be outdated?
+4. Are there possibly deprecated patterns being used?
+
+If any items fail verification, include them as [FUNCTIONAL] issues (unverified dependencies
+can cause runtime failures). Tag with "NEEDS_VERIFICATION:" prefix.
+
 ## Adversarial Testing
 
 After structural evaluation, you may be asked to perform adversarial testing.
@@ -307,11 +320,13 @@ Output your evaluation as a JSON object:
       "reason": "<explanation>"
     }
   ],
-  "issues": ["<issue 1 with file:line>", "<issue 2>"],
+  "issues": ["[FUNCTIONAL] <issue 1 with file:line>", "[STRUCTURAL] <issue 2>", "[COSMETIC] <issue 3>"],
   "suggestions": ["<suggestion 1>", "<suggestion 2>"],
   "overall_score": <0-100>,
   "pivot_recommended": true/false,
-  "pivot_reason": "<if true, explain why>"
+  "pivot_reason": "<if true, explain why>",
+  "only_cosmetic": true/false,
+  "issue_completeness": "exhaustive"
 }
 ```
 
@@ -504,6 +519,26 @@ def _validate_score_consistency(result: EvaluationResult) -> None:
         )
 
 
+def _detect_cosmetic_only(issues: list[str]) -> bool:
+    """Detect if all issues in a list are cosmetic-only.
+
+    Uses [COSMETIC] tags from evaluator output. If any issue has [FUNCTIONAL]
+    or [STRUCTURAL] tag, returns False. If any issue has no tag at all,
+    conservatively returns False (assumes non-cosmetic).
+
+    Returns True only when ALL issues are tagged [COSMETIC].
+    """
+    if not issues:
+        return False
+    for issue in issues:
+        upper = issue.upper()
+        if "[FUNCTIONAL]" in upper or "[STRUCTURAL]" in upper:
+            return False
+        if "[COSMETIC]" not in upper:
+            return False  # No tag → conservative assumption: not cosmetic
+    return True
+
+
 def parse_evaluator_output(structured_output: dict | None, text: str, metrics: list[Metric]) -> EvaluationResult:
     """Parse evaluator output. Prefers structured_output, falls back to JSON extraction.
 
@@ -542,6 +577,7 @@ async def evaluate(
     min_improvement: float = 5.0,
     thinking_budget: int | None = None,
     previous_adversarial_responses: Optional[str] = None,
+    skip_adversarial: bool = False,
 ) -> EvaluationResult:
     """
     Evaluate a task's output against quality metrics.
@@ -600,6 +636,10 @@ async def evaluate(
     if evaluate_proxy:
         metrics_to_eval.extend(hybrid_metrics)
 
+    # When skip_adversarial, don't pass audits_dir to prompt (Exp 4)
+    effective_audits_dir = "" if skip_adversarial else audits_dir
+    effective_prev_adv = None if skip_adversarial else previous_adversarial_responses
+
     # Build prompt
     prompt = build_evaluator_prompt(
         task_id=task_id,
@@ -609,8 +649,8 @@ async def evaluate(
         include_proxy=evaluate_proxy and bool(hybrid_metrics),
         attempt_number=attempt_number,
         previous_scores=previous_scores,
-        audits_dir=audits_dir,
-        previous_adversarial_responses=previous_adversarial_responses,
+        audits_dir=effective_audits_dir,
+        previous_adversarial_responses=effective_prev_adv,
     )
 
     # Configure thinking for evaluator (default: 10000 — quality assessment benefits)

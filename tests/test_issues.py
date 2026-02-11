@@ -25,6 +25,7 @@ from ralph_sdk.evaluator import (
     MetricType,
     _assess_pivot_recommendation,
     _describe_trend,
+    _detect_cosmetic_only,
     _parse_evaluator_json,
     _validate_score_consistency,
     build_evaluator_prompt,
@@ -2975,3 +2976,58 @@ class TestScoreConsistencyValidation:
         _validate_score_consistency(result)
         captured = capsys.readouterr()
         assert "All 2 issues are cosmetic" in captured.out
+
+
+class TestCosmeticStagnationDetection:
+    """Tests for _detect_cosmetic_only() used in cosmetic stagnation termination."""
+
+    def test_all_cosmetic_returns_true(self):
+        issues = [
+            "[COSMETIC] Missing docstring for function foo",
+            "[COSMETIC] Variable naming inconsistency",
+        ]
+        assert _detect_cosmetic_only(issues) is True
+
+    def test_functional_issue_returns_false(self):
+        issues = [
+            "[COSMETIC] Missing docstring",
+            "[FUNCTIONAL] Bug in calculate_total()",
+        ]
+        assert _detect_cosmetic_only(issues) is False
+
+    def test_structural_issue_returns_false(self):
+        issues = [
+            "[COSMETIC] Style issue",
+            "[STRUCTURAL] DRY violation in handler.py",
+        ]
+        assert _detect_cosmetic_only(issues) is False
+
+    def test_untagged_issue_returns_false(self):
+        """Issues without tags are conservatively treated as non-cosmetic."""
+        issues = [
+            "[COSMETIC] Missing docstring",
+            "Some issue without a tag",
+        ]
+        assert _detect_cosmetic_only(issues) is False
+
+    def test_empty_list_returns_false(self):
+        assert _detect_cosmetic_only([]) is False
+
+    def test_case_insensitive(self):
+        issues = [
+            "[cosmetic] lowercase tag",
+            "[Cosmetic] mixed case tag",
+        ]
+        assert _detect_cosmetic_only(issues) is True
+
+    def test_single_cosmetic_issue(self):
+        issues = ["[COSMETIC] Only one cosmetic issue"]
+        assert _detect_cosmetic_only(issues) is True
+
+    def test_mixed_functional_and_cosmetic(self):
+        issues = [
+            "[FUNCTIONAL] Tests fail for edge case",
+            "[COSMETIC] Missing type hints",
+            "[COSMETIC] Inconsistent naming",
+        ]
+        assert _detect_cosmetic_only(issues) is False
