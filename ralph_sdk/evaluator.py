@@ -268,6 +268,22 @@ For SUBJECTIVE metrics (0-100):
 - 60-69: Below standard, needs work
 - <60: Poor, significant problems
 
+## Exhaustive Issue Discovery
+
+You MUST list ALL issues you can find in a single evaluation (up to 20).
+Sort by severity: FUNCTIONAL → STRUCTURAL → COSMETIC.
+Do NOT "save issues for next time" — if you see a DRY violation, report it NOW.
+WHY: 漏报 issue → Worker 只修了已报的 → 下轮评估发现漏报的 → 又一轮 RETRY（~$3, ~5min）。一次全报完最省钱。
+
+**Thinking-first process**: 在 thinking/scratchpad 中先建完整 checklist，再写 issues：
+1. 在 thinking 中列出 acceptance criteria 的每一条，逐条标注 PASS/FAIL
+2. 在 thinking 中扫描所有改动文件，记录每个可疑点
+3. 从 checklist 中提取所有 FAIL/可疑点，写入 issues（不遗漏）
+
+In your JSON output, include these additional fields:
+- "only_cosmetic": true/false — set to true when ALL issues are COSMETIC level
+- "issue_completeness": "exhaustive" — confirms you checked all aspects
+
 ## Anti-Anchoring Rules
 
 - Score based ONLY on current code quality. Previous scores are irrelevant.
