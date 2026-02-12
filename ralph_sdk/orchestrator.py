@@ -1069,7 +1069,7 @@ async def run(
 
                 # Cosmetic stagnation termination (Improvement 3)
                 is_cosmetic = _detect_cosmetic_only(eval_result.issues)
-                if is_cosmetic and eval_result.overall_score >= 90:
+                if is_cosmetic and eval_result.overall_score >= target_score:
                     cosmetic_stagnation_count[decision.target] = cosmetic_stagnation_count.get(decision.target, 0) + 1
                 else:
                     cosmetic_stagnation_count[decision.target] = 0

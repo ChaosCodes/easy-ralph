@@ -1023,10 +1023,6 @@ import some_lib
 some_lib.new_method()
 ```
 
-<use_parallel_tool_calls>
-When multiple tool calls are independent (e.g., reading several files, running searches in parallel), invoke them in a single response. This significantly reduces wall-clock time.
-</use_parallel_tool_calls>
-
 ## Subagents (via Task tool)
 You have access to specialized subagents via the Task tool:
 - **"researcher"**: For deep investigation of technical topics (uses sonnet, cheaper). Use when you need thorough research on a specific API, library, or technique.
@@ -1039,7 +1035,7 @@ Use them when subtasks are clearly separable and can run independently.
 - 测试文件命名: `tests/test_<feature_name>.py` (或项目已有的 test 目录结构)
 - 运行测试确认通过: `pytest tests/ -q` (或项目约定的 test 命令)
 - 如果任务不适合写测试（纯文档、主观任务），在 task file 中标注 "no test applicable" 并说明原因
-- 禁止在有 test 且 test 未通过的情况下声称任务完成。WHY: 声称完成但 test 失败会触发一轮完整的 Evaluator 评估（~$3, ~5min），然后 RETRY 回来还是要修。先修好 test 再提交，一次过。
+- 禁止在有 test 且 test 未通过的情况下声称任务完成
 
 ## Output Requirements
 Update tasks/{{task_id}}.md with:
@@ -1058,25 +1054,11 @@ Also update pool.md:
 - Use `ralph_add_verified` after WebSearch to cache results for other workers
 
 ## Quality Checks (必须执行，禁止跳过)
-- 实现完成后必须运行 typecheck（如项目有配置）。禁止跳过。WHY: 类型错误是 Evaluator 最常扣分的 FUNCTIONAL issue
-- 实现完成后必须运行 tests。禁止跳过。WHY: test 失败 = 自动 RETRY，浪费一整轮迭代
-- Ensure code follows existing patterns. WHY: 不遵循现有模式会被标记为 STRUCTURAL issue，扣 10-20 分
-- 禁止使用未经 WebSearch 验证的外部 API 版本号/函数签名。WHY: 过时 API 是 runtime failure，Evaluator 判为 FUNCTIONAL -30
+- 实现完成后必须运行 typecheck（如项目有配置）。禁止跳过
+- 实现完成后必须运行 tests。禁止跳过
+- Ensure code follows existing patterns
+- 禁止使用未经 WebSearch 验证的外部 API 版本号/函数签名
 - 禁止在未运行 typecheck 的情况下声称实现完成（如项目有 tsconfig/pyproject 等配置）
-
-## Pre-Submission Self-Review (在 thinking 中完成，不输出)
-提交前，在你的 thinking/scratchpad 中逐项确认以下 5 点。任何一项为 NO 则必须修复后再提交：
-1. `pytest tests/ -q` 是否全部 PASSED？（不是 "should pass"，是实际运行结果）
-2. 是否有 assert/debug print/hardcoded path 遗留在生产代码中？
-3. 是否有未使用的 import 或死代码？
-4. acceptance criteria 中的每一条是否都有对应的实现？
-5. 是否有 hardcoded 值应该改为配置/参数？
-
-## Fix Strategy — 修根因不修症状
-当 test 失败或发现 bug 时：
-- 禁止只修让 test 通过的最小改动（patch the symptom）。必须找到根因（root cause）再修。
-- WHY: 修症状 → Evaluator 下轮发现同类问题 B → 又 RETRY。修根因一次解决整类问题。
-- 方法: 先问 "为什么会出这个 bug？" → 找到产生 bug 的模式 → 搜索同类模式 → 一起修。
 """
 
 # -----------------------------------------------------------------------------
