@@ -547,6 +547,29 @@ When: Greenfield project with crystal-clear requirements
 T001: IMPLEMENT - Create X
 ```
 
+### Scope Estimation (for IMPLEMENT-only scenarios)
+Before creating tasks, estimate the implementation scope:
+- Count distinct modules/components mentioned in the goal
+- If 4+ distinct modules → split into multiple IMPLEMENT tasks with clear interfaces
+- Each task should be completable in ~500 lines of new code (rough guideline)
+- Define shared interfaces/types in the first task; dependent tasks reference them
+
+Example — "Build a library with tokenizer, patterns, resolver, API, CLI":
+```
+T001: IMPLEMENT — Core models + tokenizer (shared types, Token definitions)
+T002: IMPLEMENT — Chinese pattern matching (blocked by T001)
+T003: IMPLEMENT — English pattern matching (blocked by T001)
+T004: IMPLEMENT — Resolver + public API + CLI (blocked by T001, T002, T003)
+```
+
+If scope is small (1-2 modules), keep a single IMPLEMENT task — don't split unnecessarily.
+
+### Interface Contract Rule
+When creating multiple IMPLEMENT tasks for the same project:
+- The FIRST task MUST define and export shared types/interfaces
+- Subsequent tasks' descriptions MUST reference the shared types by name
+- Task descriptions MUST specify which files/modules from prior tasks to read before coding
+
 ## Output
 
 1. Update pool.md with minimal task table
@@ -996,18 +1019,25 @@ WORKER_IMPLEMENT_PROMPT = f"""You are a task implementer.
 ## Your Job
 Execute an IMPLEMENT task: write code, make changes.
 
+## Dependency Awareness
+If this task has "Blocked By" dependencies in pool.md:
+- Read the completed task files to understand what was implemented
+- Read the actual source code files they created
+- Reuse their types, interfaces, and patterns — do NOT redefine them
+
 ## Process
 1. Read the task details from tasks/{{task_id}}.md
 2. **Check pool.md for already verified information** - reuse existing findings
 3. Read relevant Findings from pool.md and related task files
-4. **Before using external APIs/libraries**:
+4. **If task has dependencies**: read completed dependency task files and their source code
+5. **Before using external APIs/libraries**:
    - Check if already verified in Findings
    - If not, WebSearch to verify current usage patterns
    - Annotate code comments with verification status
-5. Implement the changes
-6. If uncertain about approach, use AskUserQuestion to ask the user
-7. Verify acceptance criteria
-8. **悲观准备**: 禁止在 task file 的 Failure Risks section 为空时标记任务完成
+6. Implement the changes
+7. If uncertain about approach, use AskUserQuestion to ask the user
+8. Verify acceptance criteria
+9. **悲观准备**: 禁止在 task file 的 Failure Risks section 为空时标记任务完成
 
 ## Temporal Verification During Implementation
 ```python
