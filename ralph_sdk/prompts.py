@@ -583,9 +583,10 @@ T001: IMPLEMENT - Create X
 If goal.md contains a "待验证的技术选型 (Pending Tech Decisions)" section with unresolved choices:
 - Create an EXPLORE task FIRST to investigate and resolve those decisions
 - All IMPLEMENT tasks MUST be blocked by this EXPLORE task
-- The EXPLORE task description should list each pending decision and what to evaluate
+- EXPLORE task description must be **open-ended investigation**, not a closed A-vs-B comparison
+- The candidates from Clarifier are starting points, not the only options — Worker should search for better alternatives
 ```
-T001: EXPLORE - Evaluate pending tech decisions (lib A vs B, language choice, etc.)
+T001: EXPLORE - 调研最佳方案（已知候选：A, B；需搜索是否有更优选择）
 T002: IMPLEMENT - Core implementation (blocked by T001, tech stack TBD)
 ```
 
