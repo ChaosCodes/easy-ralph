@@ -1024,6 +1024,7 @@ If this task has "Blocked By" dependencies in pool.md:
 - Read the completed task files to understand what was implemented
 - Read the actual source code files they created
 - Reuse their types, interfaces, and patterns — do NOT redefine them
+- If you find yourself writing a helper function that duplicates logic from a sibling task, extract it into a shared utils module instead
 
 ## Process
 1. Read the task details from tasks/{{task_id}}.md
