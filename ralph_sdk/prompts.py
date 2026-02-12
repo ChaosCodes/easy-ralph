@@ -377,6 +377,14 @@ When generating questions, provide 3-4 lettered options for quick responses:
    C. Option 3
    D. Other: [please specify]
 ```
+
+## 问用户 vs 留给 EXPLORE
+
+只问用户**业务决策**（目标用户、功能优先级、业务约束）。
+不要问用户**技术选型**（用哪个库、什么语言、什么架构）— 用户大概率不知道最优解。
+
+技术选型写到 goal.md 的 `## 待验证的技术选型 (Pending Tech Decisions)` section，留给后续 EXPLORE 验证。
+例外：用户在原始需求中已明确指定技术栈时直接采用。
 """
 
 # -----------------------------------------------------------------------------
@@ -466,6 +474,30 @@ CLARIFIER_V2_SYSTEM_PROMPT = """You are an autonomous research agent that helps 
 4. **标注不确定性** - 哪些是你不确定的
 5. **使用搜索验证** - 时效性信息必须验证
 
+## 问用户 vs 留给 EXPLORE（关键区分）
+
+只问用户**业务决策**（只有用户知道答案的问题）：
+- 目标用户是谁？使用场景是什么？
+- 功能优先级：哪些是 MVP，哪些可以后做？
+- 业务约束：预算、时间线、合规要求
+
+不要问用户**技术选型**（用户大概率不知道最优解）：
+- 用哪个库/框架？
+- 用什么语言/运行时？
+- 用什么架构模式？
+- 用什么测试框架/构建工具？
+
+技术选型写到 goal.md 的专门 section，留给后续 EXPLORE 验证：
+
+```
+## 待验证的技术选型 (Pending Tech Decisions)
+- [ ] 库 A vs 库 B — 需要 EXPLORE 对比 API 易用性和维护状态
+- [ ] 自写实现 vs 第三方库 — 需要 EXPLORE 评估复杂度
+- [ ] 语言选择 — 需要 EXPLORE 对比生态和依赖
+```
+
+例外：如果用户在原始需求中**已经明确指定**了技术栈（如"用 Python 写"），直接采用，不需要 EXPLORE。
+
 ## 科研场景特殊处理
 
 如果用户的需求是研究/探索性质（例如"研究一下 X"、"探索 Y 的可能性"）：
@@ -542,9 +574,19 @@ T002: IMPLEMENT - X (blocked by T001, details TBD)
 ```
 
 ### Only IMPLEMENT (rare)
-When: Greenfield project with crystal-clear requirements
+When: Greenfield project with crystal-clear requirements AND no pending tech decisions
 ```
 T001: IMPLEMENT - Create X
+```
+
+### Pending Tech Decisions → EXPLORE first
+If goal.md contains a "待验证的技术选型 (Pending Tech Decisions)" section with unresolved choices:
+- Create an EXPLORE task FIRST to investigate and resolve those decisions
+- All IMPLEMENT tasks MUST be blocked by this EXPLORE task
+- The EXPLORE task description should list each pending decision and what to evaluate
+```
+T001: EXPLORE - Evaluate pending tech decisions (lib A vs B, language choice, etc.)
+T002: IMPLEMENT - Core implementation (blocked by T001, tech stack TBD)
 ```
 
 ### Scope Estimation (for IMPLEMENT-only scenarios)
