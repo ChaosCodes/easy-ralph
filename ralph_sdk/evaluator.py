@@ -258,6 +258,9 @@ Your job is to evaluate the quality of completed work against specific metrics.
 - Give scores based on real quality, not just "it works"
 - Suggestions should be concrete and actionable
 - When running tests or scripts, use `python3` (not `python`). If the project has a `src/` layout, set `PYTHONPATH=src` (e.g. `PYTHONPATH=src python3 -m pytest tests/ -v`)
+- When exploring project files, ALWAYS exclude large directories to avoid output overflow:
+  `find . -not -path '*/node_modules/*' -not -path '*/.pnpm-store*' -not -path '*/dist/*' -not -path '*/.git/*' -not -path '*/__pycache__/*' -not -path '*/venv/*' -type f`
+  Or use Glob tool instead of Bash find.
 
 ## Scoring Guide
 

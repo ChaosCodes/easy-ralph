@@ -922,16 +922,27 @@ async def run(
                 if skip_adv:
                     console.print(f"[dim]⏭ Skipping adversarial testing ({adversarial_clean_count[decision.target]} consecutive clean rounds)[/dim]")
 
-                eval_result = await evaluate(
-                    decision.target,
-                    cwd=cwd,
-                    verbose=verbose,
-                    previous_scores=previous_scores,
-                    attempt_number=attempt_number,
-                    thinking_budget=thinking_budget,
-                    previous_adversarial_responses=prev_adv_response,
-                    skip_adversarial=skip_adv,
-                )
+                try:
+                    eval_result = await evaluate(
+                        decision.target,
+                        cwd=cwd,
+                        verbose=verbose,
+                        previous_scores=previous_scores,
+                        attempt_number=attempt_number,
+                        thinking_budget=thinking_budget,
+                        previous_adversarial_responses=prev_adv_response,
+                        skip_adversarial=skip_adv,
+                    )
+                except Exception as eval_exc:
+                    console.print(f"[red]✗ Evaluator crashed: {eval_exc}[/red]")
+                    console.print("[yellow]Skipping evaluation, will retry next iteration[/yellow]")
+                    append_to_progress_log(
+                        f"EXECUTE {decision.target} - EVAL_CRASH: {str(eval_exc)[:200]}",
+                        cwd
+                    )
+                    logger.log_iteration_end(i, decision.action.value, success=True)
+                    generate_handoff_note(cwd)
+                    continue
 
                 # Auto-retry on infra failure (up to 2 retries)
                 MAX_EVAL_RETRIES = 2
