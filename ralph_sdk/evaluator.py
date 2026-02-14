@@ -296,7 +296,30 @@ In your JSON output, include these additional fields:
   - FUNCTIONAL issues (bugs, missing features, wrong behavior): up to -30 points
   - STRUCTURAL issues (DRY violations, missing error handling, bad architecture): up to -20 points
   - COSMETIC issues (style, naming, docstrings, type annotations): up to -5 points
-- When listing issues, tag each as [FUNCTIONAL], [STRUCTURAL], or [COSMETIC]
+  - ACCEPTABLE_TRADEOFF (documented design decisions, framework limitations): 0 points (report only)
+- When listing issues, tag each as [FUNCTIONAL], [STRUCTURAL], [COSMETIC], or [ACCEPTABLE_TRADEOFF]
+
+## When to Use ACCEPTABLE_TRADEOFF
+
+Use this classification when ALL of these apply:
+1. The issue is **explicitly documented** in code comments or docstrings
+2. You use phrases like "unavoidable", "architecturally necessary", "standard pattern", or "documented trade-off"
+3. The alternative would require framework changes, library modifications, or major refactoring
+4. The pattern follows industry best practices or official recommendations
+
+**Examples of ACCEPTABLE_TRADEOFF**:
+- React ref pattern for stable callbacks (avoiding useCallback dependency issues)
+- Creating new instances when library API mutates objects (e.g., chess.js game.move())
+- Defensive duplication to prevent mutation bugs
+- Framework-mandated patterns (Next.js client/server component constraints)
+
+**NOT ACCEPTABLE_TRADEOFF** (these are real issues):
+- Undocumented workarounds
+- Technical debt "we'll fix later"
+- Performance issues that could be fixed with reasonable effort
+- Missing error handling or validation
+
+**CRITICAL**: If you mark an issue as ACCEPTABLE_TRADEOFF, it does NOT deduct points from the score.
 
 ## Pivot Assessment
 
@@ -339,7 +362,7 @@ Output your evaluation as a JSON object:
       "reason": "<explanation>"
     }
   ],
-  "issues": ["[FUNCTIONAL] <issue 1 with file:line>", "[STRUCTURAL] <issue 2>", "[COSMETIC] <issue 3>"],
+  "issues": ["[FUNCTIONAL] <issue 1 with file:line>", "[STRUCTURAL] <issue 2>", "[COSMETIC] <issue 3>", "[ACCEPTABLE_TRADEOFF] <documented design decision>"],
   "suggestions": ["<suggestion 1>", "<suggestion 2>"],
   "overall_score": <0-100>,
   "pivot_recommended": true/false,
@@ -555,6 +578,28 @@ def _detect_cosmetic_only(issues: list[str]) -> bool:
             return False
         if "[COSMETIC]" not in upper:
             return False  # No tag → conservative assumption: not cosmetic
+    return True
+
+
+def _detect_acceptable_issues_only(issues: list[str]) -> bool:
+    """Detect if all issues are acceptable (COSMETIC or ACCEPTABLE_TRADEOFF).
+
+    Uses issue tags from evaluator output. Returns True only when ALL issues
+    are tagged as either [COSMETIC] or [ACCEPTABLE_TRADEOFF].
+
+    This is useful for stagnation detection - if only acceptable issues remain
+    for multiple consecutive rounds, the task can be accepted.
+    """
+    if not issues:
+        return False
+    for issue in issues:
+        upper = issue.upper()
+        # If issue has FUNCTIONAL or STRUCTURAL tag, it's not acceptable
+        if "[FUNCTIONAL]" in upper or "[STRUCTURAL]" in upper:
+            return False
+        # Issue must have either COSMETIC or ACCEPTABLE_TRADEOFF tag
+        if "[COSMETIC]" not in upper and "[ACCEPTABLE_TRADEOFF]" not in upper:
+            return False  # No tag or unknown tag → not acceptable
     return True
 
 

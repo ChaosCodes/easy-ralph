@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from .clarifier import clarify_requirements, clarify_requirements_v2, quick_clarify
-from .evaluator import _detect_cosmetic_only, evaluate, get_attempt_history, read_adversarial_response
+from .evaluator import _detect_acceptable_issues_only, _detect_cosmetic_only, evaluate, get_attempt_history, read_adversarial_response
 from .logger import SessionLogger, archive_session, format_duration, format_tokens, log_tool_call, stream_query
 from .notification import (
     notify_checkpoint,
@@ -1078,9 +1078,10 @@ async def run(
                         logger.log_session_end(success=False, reason=f"Waiting for batch testing ({len(pending)} checkpoints)")
                         return False
 
-                # Cosmetic stagnation termination (Improvement 3)
-                is_cosmetic = _detect_cosmetic_only(eval_result.issues)
-                if is_cosmetic and eval_result.overall_score >= target_score:
+                # Acceptable issues stagnation termination (Improvement 3+)
+                # Accept if only COSMETIC or ACCEPTABLE_TRADEOFF issues remain
+                is_acceptable = _detect_acceptable_issues_only(eval_result.issues)
+                if is_acceptable and eval_result.overall_score >= target_score:
                     cosmetic_stagnation_count[decision.target] = cosmetic_stagnation_count.get(decision.target, 0) + 1
                 else:
                     cosmetic_stagnation_count[decision.target] = 0
@@ -1088,11 +1089,11 @@ async def run(
                 cosmetic_stagnated = cosmetic_stagnation_count.get(decision.target, 0) >= 2
 
                 if cosmetic_stagnated:
-                    console.print(f"[green]✓ Task {decision.target} accepted despite cosmetic issues "
-                                  f"(score: {eval_result.overall_score:.0f}, {cosmetic_stagnation_count[decision.target]} consecutive cosmetic-only rounds)[/green]")
+                    console.print(f"[green]✓ Task {decision.target} accepted despite minor issues "
+                                  f"(score: {eval_result.overall_score:.0f}, {cosmetic_stagnation_count[decision.target]} consecutive rounds with only acceptable issues)[/green]")
                     append_to_progress_log(
-                        f"EXECUTE {decision.target} - COSMETIC_STAGNATION_ACCEPTED "
-                        f"(score: {eval_result.overall_score:.0f}/{target_score}, cosmetic-only issues for {cosmetic_stagnation_count[decision.target]} rounds)",
+                        f"EXECUTE {decision.target} - ACCEPTABLE_ISSUES_STAGNATION_ACCEPTED "
+                        f"(score: {eval_result.overall_score:.0f}/{target_score}, only COSMETIC/ACCEPTABLE_TRADEOFF issues for {cosmetic_stagnation_count[decision.target]} rounds)",
                         cwd
                     )
                 elif eval_result.overall_passed and eval_result.overall_score >= target_score:
