@@ -5,6 +5,7 @@ Worker agent: executes EXPLORE and IMPLEMENT tasks.
 - IMPLEMENT: write code, make changes
 """
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +30,15 @@ from .prompts import (
 )
 
 console = Console()
+
+# Default domains allowed through sandbox network proxy.
+# The sandbox proxy blocks all outbound HTTP unless the domain has a
+# WebFetch permission rule. These defaults cover common needs.
+DEFAULT_SANDBOX_ALLOWED_DOMAINS = [
+    "api.anthropic.com",
+    "pypi.org",
+    "files.pythonhosted.org",
+]
 
 # Subagents available to worker via the Task tool
 WORKER_SUBAGENTS = {
@@ -113,6 +123,8 @@ async def work(
     use_mcp: bool = False,
     thinking_budget: int | None = None,
     adversarial_findings: Optional[str] = None,
+    no_sandbox: bool = False,
+    sandbox_allowed_domains: list[str] | None = None,
 ) -> WorkerResult:
     """
     Execute a task (EXPLORE or IMPLEMENT).
@@ -186,14 +198,31 @@ async def work(
         base_tools = core_tools
         mcp_servers = None
 
+    # Build sandbox network settings: WebFetch rules control the sandbox proxy's
+    # domain allowlist. Without these, all outbound HTTP from Bash subprocesses
+    # gets 403'd by the sandbox proxy.
+    domains = sandbox_allowed_domains if sandbox_allowed_domains is not None else DEFAULT_SANDBOX_ALLOWED_DOMAINS
+    sandbox_settings_json = None
+    if domains:
+        sandbox_settings_json = json.dumps({
+            "permissions": {
+                "allow": [f"WebFetch(domain:{d})" for d in domains]
+            }
+        })
+
     if task_type == "IMPLEMENT":
         tools = base_tools + ["Write", "Edit", "Bash"]
         permission_mode = "acceptEdits"
-        sandbox = SandboxSettings(
-            enabled=True,
-            autoAllowBashIfSandboxed=True,
-            allowUnsandboxedCommands=False,
-        )
+        if no_sandbox:
+            sandbox = None
+        else:
+            sandbox = SandboxSettings(
+                enabled=True,
+                autoAllowBashIfSandboxed=True,
+                allowUnsandboxedCommands=True,
+                # python/pip/git run outside sandbox to avoid Seatbelt restrictions
+                excludedCommands=["python3", "python", "pip", "pip3", "git"],
+            )
         agents = WORKER_SUBAGENTS
     else:
         # EXPLORE doesn't have Bash, acceptEdits is fine
@@ -211,6 +240,7 @@ async def work(
         allowed_tools=tools,
         permission_mode=permission_mode,
         sandbox=sandbox,
+        settings=sandbox_settings_json,
         enable_file_checkpointing=task_type == "IMPLEMENT",
         agents=agents,
         max_turns=50,

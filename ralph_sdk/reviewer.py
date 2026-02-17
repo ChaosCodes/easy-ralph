@@ -7,6 +7,7 @@ Possible verdicts:
 - FAILED: fundamental issue, need different approach
 """
 
+import json
 from dataclasses import dataclass
 from enum import Enum
 
@@ -68,7 +69,7 @@ def parse_reviewer_output(structured_output: dict | None, text: str) -> ReviewRe
     return ReviewResult(verdict=Verdict.RETRY, reason="Failed to parse reviewer output")
 
 
-async def review(task_id: str, cwd: str = ".", verbose: bool = False, thinking_budget: int | None = None) -> ReviewResult:
+async def review(task_id: str, cwd: str = ".", verbose: bool = False, thinking_budget: int | None = None, sandbox_allowed_domains: list[str] | None = None) -> ReviewResult:
     """
     Review an IMPLEMENT task after execution.
 
@@ -102,8 +103,21 @@ async def review(task_id: str, cwd: str = ".", verbose: bool = False, thinking_b
     reviewer_sandbox = SandboxSettings(
         enabled=True,
         autoAllowBashIfSandboxed=True,
-        allowUnsandboxedCommands=False,
+        allowUnsandboxedCommands=True,
+        # python/pip/git run outside sandbox to avoid Seatbelt restrictions
+        excludedCommands=["python3", "python", "pip", "pip3", "git"],
     )
+
+    # WebFetch rules control the sandbox proxy's domain allowlist
+    from .worker import DEFAULT_SANDBOX_ALLOWED_DOMAINS
+    domains = sandbox_allowed_domains if sandbox_allowed_domains is not None else DEFAULT_SANDBOX_ALLOWED_DOMAINS
+    sandbox_settings_json = None
+    if domains:
+        sandbox_settings_json = json.dumps({
+            "permissions": {
+                "allow": [f"WebFetch(domain:{d})" for d in domains]
+            }
+        })
 
     # Configure thinking for reviewer (default: 0 — mostly runs tests and checks)
     reviewer_options = ClaudeAgentOptions(
@@ -111,6 +125,7 @@ async def review(task_id: str, cwd: str = ".", verbose: bool = False, thinking_b
         allowed_tools=["Read", "Bash", "Glob", "Grep", "LSP", "WebSearch"],
         permission_mode="acceptEdits",
         sandbox=reviewer_sandbox,
+        settings=sandbox_settings_json,
         max_turns=25,
         cwd=cwd,
         output_format=REVIEWER_OUTPUT_SCHEMA,
