@@ -741,6 +741,22 @@ T001: EXPLORE - 调研最佳方案（已知候选：A, B；需搜索是否有更
 T002: IMPLEMENT - Core implementation (blocked by T001, tech stack TBD)
 ```
 
+### EXPLORE 子类型
+创建 EXPLORE 任务时，根据性质选择描述模式：
+
+- **数据分析类**: "分析 [文件]，计算 [指标]"（不需要 WebSearch）
+- **研究类**: "Research: 搜索 [话题]。搜索方向: [1], [2], [3]"（必须包含搜索关键词建议）
+- **调查类**: "调查 [现象]，找出原因"
+
+研究类 EXPLORE 的描述中必须包含具体的搜索关键词建议，帮助 Worker 知道该搜什么。
+
+示例：
+```
+T001: EXPLORE - Research: 搜索 best-of-N selection 的 SOTA 方法。搜索方向: process reward model, self-consistency, LLM-as-judge
+T002: EXPLORE - 分析 outputs/vl_results.jsonl 中的 pass rate 分布
+T003: EXPLORE - 调查 verify loop 在 math 类题目上准确率低的原因
+```
+
 ### Scope Estimation (for IMPLEMENT-only scenarios)
 Before creating tasks, estimate the implementation scope:
 - Count distinct modules/components mentioned in the goal
