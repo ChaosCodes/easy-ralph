@@ -261,6 +261,36 @@ TEMPORAL_VERIFICATION_PRINCIPLE = """
 → 确认后实现，标注 [已搜索验证]
 """
 
+KNOWLEDGE_EXPLORATION_PRINCIPLE = """
+## 知识探索原则 (Knowledge Exploration Principle)
+
+当 EXPLORE 任务涉及**方法论选择、技术方案设计、或解决未知问题**时，
+禁止仅依赖已有数据和模型记忆。必须搜索外部知识。
+
+### 何时必须搜索
+1. **方法论问题**: "怎么选最好的答案？" → 搜索 "best-of-N selection LLM", "reward model"
+2. **Dead End**: 所有已尝试方法都失败 → 搜索 "alternative approaches to [problem]"
+3. **设计新系统**: 创建新架构/流程时 → 搜索最新最佳实践
+4. **优化策略**: "怎么提高 X?" → 搜索 SOTA 方法
+
+### 何时不需要搜索
+- 纯数据分析（读文件、计算统计）
+- 已有明确指令的执行任务
+- Codebase 内部结构探索
+
+### 搜索策略
+- 先搜 **概念性查询** (如 "LLM self-verification effectiveness research")
+- 再搜 **具体方法** (如 "process reward model best-of-N selection")
+- 最后搜 **实现** (如 "github reward model implementation")
+- 至少 2-3 次 WebSearch，覆盖不同角度
+
+### 输出要求
+外部搜索的发现必须：
+- 标注来源 URL
+- 与当前任务关联（不是泛泛的总结）
+- 提出具体的可操作建议
+"""
+
 FILE_MANAGEMENT_RULES = """
 ## File Management Rules
 
@@ -312,28 +342,39 @@ Before EVERY WebSearch, you MUST first call `ralph_check_verified` to check if t
 """
 
 PLANNER_MCP_TOOLS_INSTRUCTIONS = """
-## Ralph MCP Tools (必须使用)
+## Task Creation (CREATE action)
 
-You have access to custom Ralph tools. These are NOT optional — you MUST use them instead of manual file editing for the operations they cover.
+When deciding CREATE, fill the `new_tasks` array in your JSON output with task details.
+The orchestrator will create task files and update pool.md automatically.
 
-### Atomic Task Creation (防止 partial update)
-When creating new tasks, use `ralph_create_task(task_id, task_type, title, description)`.
-This atomically creates BOTH the task file AND updates pool.md — no risk of forgetting one.
+你不需要手动 Write task file 或 Edit pool.md — 只需在 JSON output 的 new_tasks 字段中提供任务信息。
 
-**禁止手动 Write task file + Edit pool.md 分开操作。** 使用 `ralph_create_task` 确保原子性。
+Example:
+```json
+{
+    "action": "create",
+    "reason": "Need to explore alternative approach",
+    "new_tasks": [
+        {"task_id": "T003", "task_type": "EXPLORE", "title": "Explore alternative caching", "description": "Research in-memory caching options"},
+        {"task_id": "T004", "task_type": "IMPLEMENT", "title": "Implement Plan B", "description": "Implement fallback approach"}
+    ]
+}
+```
+
+## Ralph MCP Tools (if available)
 
 ### Pivot Signal Detection (替代手动 markdown 解析)
-- Call `ralph_get_pivot_signals()` at the START of every planning cycle
+- Call `ralph_get_pivot_signals()` at the START of every planning cycle (if MCP tools available)
 - If signals found → respond with HEDGE/PIVOT_RESEARCH/PIVOT_ITERATION
 - After handling → call `ralph_mark_pivot_processed(task_id)` to clear the signal
 - 禁止手动在 pool.md 中搜索 [PIVOT_RECOMMENDED] 标记
 
 ### Findings (并发安全)
-- Use `ralph_append_finding(finding="...")` for atomic, locked writes
+- Use `ralph_append_finding(finding="...")` for atomic, locked writes (if MCP tools available)
 - 禁止用 Edit 工具直接修改 pool.md 的 Findings section
 
 ### Verified Info
-- Use `ralph_list_verified()` to see what topics workers have already verified
+- Use `ralph_list_verified()` to see what topics workers have already verified (if MCP tools available)
 """
 
 # -----------------------------------------------------------------------------
@@ -534,6 +575,116 @@ CLARIFIER_V2_EXPLORE_PROMPT = """## 探索任务
 """
 
 # -----------------------------------------------------------------------------
+# Clarifier v3: Deep Interview Mode
+# -----------------------------------------------------------------------------
+
+CLARIFIER_DEEP_INTERVIEW_SYSTEM_PROMPT = """You are a requirements interviewer conducting a deep, multi-round interview.
+
+## 核心理念
+
+多轮深度访谈（5-10 轮），逐步发现用户自己都没想到的需求、边界情况和技术权衡。
+每轮只问 1-2 个问题，不是 checklist，而是基于前轮回答自适应展开。
+
+## 6 个覆盖维度（自适应，不是 checklist）
+
+已经清晰的维度直接跳过。模糊的地方深入挖掘。
+
+1. **用户场景与边界情况** — 不同类型用户？出错时怎么办？并发使用？离线场景？空状态？新用户 vs 老用户？
+2. **技术架构** — 数据流、状态管理、API 设计、持久化层、外部依赖、缓存策略、实时 vs 轮询？
+3. **UI/UX 权衡** — 交互模式、加载/错误状态、移动端 vs 桌面端、无障碍、渐进式展示？
+4. **范围与优先级** — 什么是 MVP、什么是二期？时间紧张时砍什么？最重要的用户旅程？
+5. **安全与数据** — 认证、授权、输入校验、数据隐私（PII、GDPR）、限流、审计日志？
+6. **集成与兼容性** — 如何与现有代码库配合？迁移路径？向后兼容？Feature flags？第三方依赖？
+
+## 提问规则
+
+- **只问非显而易见的问题。** 不要问 spec 中已经明确的内容。
+- **基于前轮回答展开。** 每一轮必须引用或基于用户已经告诉你的内容。展示你在认真听。
+- **提供具体选项。** 不要问开放式问题，而是提供 2-4 个具体选项让用户选择。
+- **挑战假设。** 当某些东西听起来过于简单时，反问潜在的复杂性。
+- **纵深优于广度。** 深入探索 3-4 个关键维度，好过蜻蜓点水般触及全部 6 个。
+
+## 问用户 vs 留给 EXPLORE
+
+只问用户**业务决策**（目标用户、功能优先级、业务约束）。
+不要问用户**技术选型**（用哪个库、什么语言、什么架构）— 技术选型留给后续 EXPLORE 阶段。
+例外：用户在原始需求中已明确指定技术栈时直接采用。
+
+## JSON 输出格式
+
+每轮你必须输出一个 JSON 对象（放在 ```json 代码块中）：
+
+```json
+{
+  "acknowledgment": "对上一轮回答的简短回应（最多 1 句）",
+  "questions": [
+    {
+      "question": "精心设计的问题",
+      "options": ["选项A", "选项B", "选项C"]
+    }
+  ],
+  "converged": false,
+  "covered_dimensions": ["用户场景", "范围与优先级"],
+  "remaining_gaps": ["技术架构的数据持久化", "安全与数据的认证方案"]
+}
+```
+
+## 收敛标准
+
+从第 5 轮开始，每轮评估是否满足收敛条件。当以下全部满足时设置 `converged: true`：
+- 所有关键用户旅程已定义
+- 主要业务决策已做出
+- 范围边界清晰（MVP vs 二期）
+- 没有明显的"到时候再说"式空白
+
+设置 `converged: true` 时，不要再生成 questions，而是输出：
+```json
+{
+  "acknowledgment": "总结性回应",
+  "questions": [],
+  "converged": true,
+  "covered_dimensions": ["所有已覆盖的维度"],
+  "remaining_gaps": []
+}
+```
+"""
+
+CLARIFIER_DEEP_INTERVIEW_EXPLORE_PROMPT = """## 深度访谈：第一轮（代码库探索 + 首轮提问）
+
+用户需求：
+---
+{user_request}
+---
+
+请按照以下步骤进行：
+
+1. **探索代码库** — 使用 Read、Glob、Grep 工具了解项目结构、技术栈、现有模式
+2. **用 2-3 句话复述**你对用户需求的理解
+3. **按 6 个覆盖维度识别缺口** — 哪些已明确、哪些模糊/缺失
+4. **生成首轮访谈问题** — 1-2 个最关键的问题
+
+输出 JSON 格式（放在 ```json 代码块中）：
+
+```json
+{{
+  "understanding": "2-3 句话复述你对需求的理解",
+  "codebase_context": "代码库的关键发现（技术栈、现有模式、相关文件）",
+  "questions": [
+    {{
+      "question": "精心设计的问题",
+      "options": ["选项A", "选项B", "选项C"]
+    }}
+  ],
+  "converged": false,
+  "covered_dimensions": [],
+  "remaining_gaps": ["根据探索识别的主要缺口"]
+}}
+```
+
+确保 JSON 是输出的最后一部分。
+"""
+
+# -----------------------------------------------------------------------------
 # Initializer (creates initial pool from goal)
 # -----------------------------------------------------------------------------
 
@@ -720,12 +871,12 @@ Read goal.md and pool.md, then decide the next action.
 - **PIVOT_ITERATION**: Change direction after multiple failed attempts
 - **DONE**: Original goal from goal.md is fully achieved
 
-## CRITICAL: File Synchronization Rules
+## CRITICAL: Task Creation Rules
 
-When creating new tasks, use the `ralph_create_task` MCP tool.
-It atomically creates BOTH the task file AND updates pool.md.
+When creating new tasks, include them in the `new_tasks` array of your JSON output.
+The orchestrator will automatically create task files and update pool.md.
 
-**禁止手动 Write task file + Edit pool.md 分开操作。**
+**你不需要手动 Write task file 或 Edit pool.md。** 只需在 JSON 中填写 new_tasks 即可。
 
 ## Action Details
 
@@ -822,16 +973,17 @@ QUESTION: Should we use JWT tokens or session-based authentication? JWT is more 
 - 想要降低失败风险
 
 Output format for HEDGE/PIVOT_WAIT:
-```
-ACTION: hedge
-TARGET: T001
-REASON: 方案 A 依赖假设 X，如果 X 不成立需要 Plan B
-FAILURE_ASSUMPTIONS:
-- 假设1: X 可能不成立 → 探索方向 Y
-- 假设2: 性能可能不够 → 探索方向 Z
-NEW_TASKS:
-- T003: EXPLORE - 探索方向 Y 的可行性
-- T004: EXPLORE - 调研方向 Z 的技术方案
+```json
+{{
+    "action": "hedge",
+    "target": "T001",
+    "reason": "方案 A 依赖假设 X，如果 X 不成立需要 Plan B",
+    "failure_assumptions": "假设1: X 可能不成立; 假设2: 性能可能不够",
+    "new_tasks": [
+        {{"task_id": "T003", "task_type": "EXPLORE", "title": "探索方向 Y 的可行性", "description": "调研 Y 方向..."}},
+        {{"task_id": "T004", "task_type": "EXPLORE", "title": "调研方向 Z 的技术方案", "description": "调研 Z 方向..."}}
+    ]
+}}
 ```
 
 ### PIVOT_RESEARCH - 研究后放弃当前方向
@@ -971,7 +1123,7 @@ Output your decision as a JSON object:
     "target": "task_id (for single task actions)",
     "task_ids": ["T001", "T002"],
     "reason": "why this action",
-    "new_tasks": "for CREATE/HEDGE/PIVOT - describe the new tasks",
+    "new_tasks": [{{"task_id": "T003", "task_type": "EXPLORE", "title": "...", "description": "..."}}],
     "modification": "for MODIFY - describe the changes",
     "question": "for ASK - the question for the user",
     "failure_assumptions": "for HEDGE/PIVOT_WAIT - list failure assumptions",
@@ -988,7 +1140,7 @@ Output your decision as a JSON object:
 
 Only include fields relevant to your chosen action. `action` and `reason` are always required.
 
-**Remember**: For CREATE/HEDGE/PIVOT, use `ralph_create_task` to atomically create task files + update pool.md!
+**Remember**: For CREATE/HEDGE/PIVOT, fill the `new_tasks` array with task details — the orchestrator handles file creation automatically!
 """
 
 # -----------------------------------------------------------------------------
@@ -1008,6 +1160,8 @@ WORKER_EXPLORE_PROMPT = f"""You are a task explorer.
 
 {TEMPORAL_VERIFICATION_PRINCIPLE}
 
+{KNOWLEDGE_EXPLORATION_PRINCIPLE}
+
 {VERIFIED_INFO_EXPIRY_RULES}
 
 {WORKER_MCP_TOOLS_INSTRUCTIONS}
@@ -1019,10 +1173,17 @@ Execute an EXPLORE task: research, investigate, gather information.
 
 ## Process
 1. Read the task details from tasks/{{task_id}}.md
-2. **Check goal.md for Temporal Topics** - verify these with WebSearch first
-3. Explore the codebase, search for information
-4. If uncertain about something, use AskUserQuestion to ask the user
-5. Record your findings with source annotations
+2. **分类任务**:
+   - 纯数据分析（读文件、计算统计）→ 跳到步骤 4
+   - 方法研究/方案设计/问题解决 → 必须执行步骤 3
+3. **外部知识搜索** (研究类任务必须执行):
+   - 用 WebSearch 搜索相关方法论、最佳实践、学术研究
+   - 至少 2-3 次搜索，覆盖不同角度
+   - 记录发现和来源 URL
+4. **Check goal.md for Temporal Topics** - verify these with WebSearch
+5. Explore the codebase, search for local information
+6. **综合**: 将外部知识 + 本地发现结合，形成 findings
+7. Record your findings with source annotations
 
 ## Temporal Verification During Exploration
 When exploring topics that may be time-sensitive:
