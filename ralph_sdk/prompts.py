@@ -1090,6 +1090,46 @@ When the progress log shows "NEEDS IMPROVEMENT" or "BELOW TARGET" for a task:
 
 **禁止在有 BELOW TARGET 任务时直接选 DONE。** The system will block it anyway, but you should proactively address the issues instead of attempting DONE.
 
+## Dead End Detection → Research Task
+
+当出现以下情况时，**必须**创建一个 "外部研究" 类型的 EXPLORE 任务，而不是接受失败结论：
+
+1. **所有已尝试方法失败**: 多次 PIVOT 后仍无可行方案
+   → CREATE EXPLORE "Research: [问题领域]"
+
+2. **结论为 "no fix exists"**: Worker 或 Evaluator 得出否定结论时
+   → 先创建 Research EXPLORE 搜索外部方案，再考虑接受该结论
+
+3. **进入自由探索阶段**: 开放式 "Path 3+" 类探索
+   → 第一步应是 Research EXPLORE 搜索外部知识
+
+### Research EXPLORE 任务描述模板
+- 标题: "Research: [问题领域]"
+- 描述必须包含:
+  - 具体搜索方向 (至少 3 个搜索关键词建议)
+  - 目标: 找到至少 2-3 个我们没尝试过的替代方案
+  - 评估每个方案的适用性
+
+### 示例
+```json
+{{
+    "action": "create",
+    "reason": "所有已尝试方法失败，需要搜索外部知识寻找新方向",
+    "new_tasks": [
+        {{
+            "task_id": "T008",
+            "task_type": "EXPLORE",
+            "title": "Research: LLM answer selection 方法",
+            "description": "搜索外部知识寻找我们没尝试过的方法。搜索方向: 1) process reward model for answer selection, 2) best-of-N selection strategies LLM, 3) self-consistency voting methods。目标: 找到至少 2-3 个替代方案，评估适用性。"
+        }}
+    ]
+}}
+```
+
+### 禁止行为
+- 禁止在未做 Research EXPLORE 的情况下得出 "无解" 结论
+- 禁止所有 PIVOT 都在已知方案空间内打转（从方案 A 转向方案 B 转向方案 C，但从不搜索外部）
+
 ## Decision Flow
 
 1. Check if any task is ready to EXECUTE
