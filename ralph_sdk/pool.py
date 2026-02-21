@@ -29,6 +29,7 @@ from typing import Optional
 RALPH_DIR = ".ralph"
 GOAL_FILE = f"{RALPH_DIR}/goal.md"
 POOL_FILE = f"{RALPH_DIR}/pool.md"
+SYNTHESIS_KB_FILE = f"{RALPH_DIR}/synthesis_kb.md"
 TASKS_DIR = f"{RALPH_DIR}/tasks"
 AUDITS_DIR = f"{RALPH_DIR}/audits"
 FEEDBACK_FILE = f"{RALPH_DIR}/feedback.md"
@@ -377,10 +378,12 @@ def init_task(
     task_type: str,
     title: str,
     description: str,
-    cwd: str = "."
+    cwd: str = ".",
+    estimated_cost: str = "",
 ) -> None:
     """Initialize a new task file."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cost_line = f"\n## Estimated Cost\n{estimated_cost}\n" if estimated_cost else ""
 
     if task_type == "EXPLORE":
         content = f"""# {task_id}: {title}
@@ -392,7 +395,7 @@ EXPLORE
 pending
 
 ## Created
-{now}
+{now}{cost_line}
 
 ## Question
 {description}
@@ -426,7 +429,7 @@ IMPLEMENT
 pending
 
 ## Created
-{now}
+{now}{cost_line}
 
 ## Description
 {description}
@@ -495,6 +498,51 @@ def extract_task_ids_from_pool(cwd: str = ".") -> list[str]:
             unique_ids.append(tid)
 
     return unique_ids
+
+
+def next_task_id(cwd: str = ".") -> str:
+    """Return the next available task ID (e.g., T024 if T023 is the highest)."""
+    existing = list_tasks(cwd) + extract_task_ids_from_pool(cwd)
+    max_num = 0
+    for tid in existing:
+        m = re.match(r'T(\d+)', tid)
+        if m:
+            max_num = max(max_num, int(m.group(1)))
+    return f"T{max_num + 1:03d}"
+
+
+def add_task_to_pool(
+    task_id: str,
+    task_type: str,
+    title: str,
+    cwd: str = ".",
+    estimated_cost: str = "",
+) -> None:
+    """Add a task row to pool.md's task table."""
+    pool_content = read_pool(cwd)
+    if not pool_content:
+        return
+
+    cost_col = f" {estimated_cost} |" if estimated_cost else ""
+    row = f"| {task_id} | {task_type} | {title} | pending | — | P0 |{cost_col}\n"
+
+    # Find the end of the task table (last line starting with |)
+    lines = pool_content.split('\n')
+    insert_idx = None
+    in_tasks = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith('## Tasks'):
+            in_tasks = True
+        elif in_tasks and line.strip().startswith('##'):
+            # Next section — insert before it
+            insert_idx = i
+            break
+        elif in_tasks and line.strip().startswith('|'):
+            insert_idx = i + 1  # after the last table row
+
+    if insert_idx is not None:
+        lines.insert(insert_idx, row.rstrip())
+        write_pool('\n'.join(lines), cwd)
 
 
 def ensure_task_files_exist(cwd: str = ".") -> list[str]:
@@ -1269,6 +1317,54 @@ def append_to_findings(finding: str, cwd: str = ".") -> None:
         _atomic_write(base / POOL_FILE, pool_content)
 
 
+def append_hard_constraint(constraint: str, cwd: str = ".") -> None:
+    """
+    Append a hard constraint to pool.md's ## Hard Constraints section.
+
+    Hard constraints are never compacted and are injected at the top of
+    the planner prompt to prevent repeating disproven hypotheses.
+
+    Uses lock scope that covers both read and write for atomicity.
+    """
+    base = Path(cwd)
+    lock_path = base / POOL_LOCK_FILE
+
+    with file_lock(lock_path):
+        pool_content = _read_pool_unlocked(cwd)
+        if not pool_content:
+            return
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        entry = f"\n- [{now}] {constraint}\n"
+
+        if "## Hard Constraints" in pool_content:
+            # Append to existing section
+            pool_content = pool_content.replace(
+                "## Hard Constraints",
+                f"## Hard Constraints{entry}",
+            )
+        else:
+            # Insert before Findings / Shared Findings section
+            for marker in ("## Findings", "## Shared Findings"):
+                if marker in pool_content:
+                    pool_content = pool_content.replace(
+                        marker,
+                        f"## Hard Constraints{entry}\n{marker}",
+                    )
+                    break
+            else:
+                # Fallback: insert before Progress Log
+                if "## Progress Log" in pool_content:
+                    pool_content = pool_content.replace(
+                        "## Progress Log",
+                        f"## Hard Constraints{entry}\n## Progress Log",
+                    )
+                else:
+                    pool_content = pool_content.rstrip() + f"\n\n## Hard Constraints{entry}"
+
+        _atomic_write(base / POOL_FILE, pool_content)
+
+
 def clear_pivot_recommendation(task_id: str, cwd: str = ".") -> None:
     """
     Clear or mark as processed a pivot recommendation from pool.md.
@@ -1654,3 +1750,481 @@ def clear_handoff_note(cwd: str = ".") -> None:
     path = Path(cwd) / HANDOFF_FILE
     if path.exists():
         path.unlink()
+
+
+# -----------------------------------------------------------------------------
+# Synthesis Support (completed tasks with results)
+# -----------------------------------------------------------------------------
+
+
+def get_stale_pending_tasks(cwd: str = ".", threshold: int = 5) -> list[str]:
+    """
+    Find pending tasks that have been idle for too many planning iterations.
+
+    Scans pool.md for pending tasks, then checks the progress log to count
+    how many iterations have passed since each task was created without
+    being executed.
+
+    Args:
+        cwd: Working directory
+        threshold: Number of iterations a task can stay pending before
+            being considered stale (default 5)
+
+    Returns:
+        List of stale task IDs
+    """
+    pool_content = read_pool(cwd)
+    if not pool_content:
+        return []
+
+    # Find pending tasks from pool table
+    # Matches rows like: | T001 | IMPLEMENT | title | pending | ... |
+    pending_tasks = re.findall(
+        r'\|\s*(T\d+)\s*\|[^|]*\|[^|]*\|\s*pending\s*\|',
+        pool_content,
+    )
+    if not pending_tasks:
+        return []
+
+    # Count total iterations in progress log (### YYYY-MM-DD HH:MM entries)
+    total_iterations = len(re.findall(r'### \d{4}-\d{2}-\d{2} \d{2}:\d{2}', pool_content))
+
+    # For each pending task, find when it was first mentioned
+    stale = []
+    for tid in pending_tasks:
+        # Find earliest mention of this task in progress log
+        mentions = list(re.finditer(
+            rf'### (\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}).*?{re.escape(tid)}',
+            pool_content,
+            re.DOTALL,
+        ))
+
+        if mentions:
+            # Count iterations AFTER this task was first mentioned
+            first_mention_pos = mentions[0].start()
+            iterations_after = len(re.findall(
+                r'### \d{4}-\d{2}-\d{2} \d{2}:\d{2}',
+                pool_content[first_mention_pos:],
+            ))
+            if iterations_after >= threshold:
+                stale.append(tid)
+        elif total_iterations >= threshold:
+            # Task exists in table but never mentioned in progress log
+            # → it was created but never touched
+            stale.append(tid)
+
+    return stale
+
+
+def count_completed_tasks_with_results(cwd: str = ".", task_type: str | None = None) -> int:
+    """
+    Count task files that have both completed status and an execution log.
+
+    These are tasks that actually ran and produced data that can be
+    synthesized into insights.
+
+    Args:
+        cwd: Working directory containing the task pool.
+        task_type: If set, only count tasks whose ``## Type`` field matches
+            (e.g. ``"IMPLEMENT"``).  ``None`` means count all types.
+
+    Returns:
+        Number of completed tasks with execution log content.
+    """
+    tasks_path = Path(cwd) / TASKS_DIR
+    if not tasks_path.exists():
+        return 0
+
+    count = 0
+    for task_file in tasks_path.glob("T*.md"):
+        content = task_file.read_text()
+        content_lower = content.lower()
+
+        # Filter by task type if specified
+        if task_type is not None:
+            type_match = re.search(r"## Type\s*\n\s*(\S+)", content)
+            if not type_match or type_match.group(1).upper() != task_type.upper():
+                continue
+
+        # Check for completed status (handles both "## Status\ncompleted" and "## Status: completed")
+        status_match = re.search(r"## status[:\s]+(?:[^\w\s]\s*)?(\w+)", content_lower)
+        is_completed = status_match and status_match.group(1) in ("completed", "passed", "done")
+
+        # Check for non-empty execution log
+        log_match = re.search(
+            r"## Execution Log\s*\n(.*?)(?=\n## |\Z)",
+            content,
+            re.DOTALL,
+        )
+        has_log = log_match and log_match.group(1).strip() and log_match.group(1).strip() not in (
+            "(execution details will be recorded here)",
+        )
+
+        if is_completed and has_log:
+            count += 1
+
+    return count
+
+
+def get_completed_task_summaries(cwd: str = ".") -> list[dict]:
+    """
+    Get summaries of completed tasks with execution data for synthesis.
+
+    Returns list of dicts with keys: task_id, status, execution_log, findings.
+    """
+    tasks_path = Path(cwd) / TASKS_DIR
+    if not tasks_path.exists():
+        return []
+
+    summaries = []
+    for task_file in sorted(tasks_path.glob("T*.md")):
+        content = task_file.read_text()
+        content_lower = content.lower()
+
+        # Check for completed-ish status
+        status_match = re.search(r"## status[:\s]+(?:[^\w\s]\s*)?(\w+)", content_lower)
+        if not status_match:
+            continue
+        status = status_match.group(1)
+        if status not in ("completed", "passed", "done", "in_progress"):
+            continue
+
+        # Extract execution log
+        log_match = re.search(
+            r"## Execution Log\s*\n(.*?)(?=\n## |\Z)",
+            content,
+            re.DOTALL,
+        )
+        execution_log = log_match.group(1).strip() if log_match else ""
+        if execution_log == "(execution details will be recorded here)":
+            execution_log = ""
+
+        # Extract findings
+        findings_match = re.search(
+            r"## Findings\s*\n(.*?)(?=\n## |\Z)",
+            content,
+            re.DOTALL,
+        )
+        findings = findings_match.group(1).strip() if findings_match else ""
+        if findings == "(discoveries from this exploration)":
+            findings = ""
+
+        if execution_log or findings:
+            summaries.append({
+                "task_id": task_file.stem,
+                "status": status,
+                "execution_log": execution_log,
+                "findings": findings,
+            })
+
+    return summaries
+
+
+# -----------------------------------------------------------------------------
+# Synthesis Knowledge Base (收敛式 KB 替代追加式 Findings)
+# -----------------------------------------------------------------------------
+
+SYNTHESIS_KB_TEMPLATE = """# Synthesis KB
+> Last updated: never | Synthesis round: 0
+
+## Strategic Summary
+- **Current best (non-circular)**: unknown
+- **Target**: (from goal.md)
+- **Gap root cause**: unknown
+- **Top action**: unknown
+
+## Active Insights
+(none yet)
+
+## Superseded
+(none yet)
+
+## Experiments
+
+### Proposed
+(none yet)
+
+### Executing
+(none yet)
+
+### Completed
+(none yet)
+
+### Abandoned
+(none yet)
+"""
+
+
+def read_synthesis_kb(cwd: str = ".") -> str:
+    """Read .ralph/synthesis_kb.md content. Returns empty template if not exists."""
+    path = Path(cwd) / SYNTHESIS_KB_FILE
+    if not path.exists():
+        return SYNTHESIS_KB_TEMPLATE
+    return path.read_text()
+
+
+def write_synthesis_kb(content: str, cwd: str = ".") -> None:
+    """Atomic write to synthesis_kb.md."""
+    init_ralph_dir(cwd)
+    base = Path(cwd)
+    target_path = base / SYNTHESIS_KB_FILE
+    _atomic_write(target_path, content)
+
+
+def render_findings_from_kb(kb_content: str) -> str:
+    """
+    Render a compact Findings section from KB content for pool.md.
+
+    Extracts:
+    - Strategic Summary (full)
+    - Top 5 Active Insights (by priority)
+    - Proposed experiments (top 3) + Executing
+    Target: ~2KB output.
+    """
+    lines = []
+
+    # --- Strategic Summary ---
+    summary_match = re.search(
+        r"## Strategic Summary\s*\n(.*?)(?=\n## |\Z)",
+        kb_content,
+        re.DOTALL,
+    )
+    if summary_match:
+        lines.append("**[Synthesis KB] Strategic Summary**")
+        lines.append(summary_match.group(1).strip())
+        lines.append("")
+
+    # --- Active Insights (top 5 by priority P1 > P2 > P3) ---
+    insights_match = re.search(
+        r"## Active Insights\s*\n(.*?)(?=\n## |\Z)",
+        kb_content,
+        re.DOTALL,
+    )
+    if insights_match:
+        body = insights_match.group(1).strip()
+        if body and body != "(none yet)":
+            # Split into individual insight blocks (### I001 ...)
+            insight_blocks = re.split(r"(?=### I\d+)", body)
+            insight_blocks = [b.strip() for b in insight_blocks if b.strip()]
+
+            # Sort by priority tag [P1, ...] < [P2, ...] < [P3, ...]
+            def _priority_key(block: str) -> int:
+                m = re.search(r"\[P(\d+)", block)
+                return int(m.group(1)) if m else 99
+
+            insight_blocks.sort(key=_priority_key)
+
+            # Take top 5
+            top = insight_blocks[:5]
+            if top:
+                lines.append("**[Synthesis KB] Key Insights**")
+                for block in top:
+                    # Compress: take first line (header) + arrow line
+                    block_lines = block.split("\n")
+                    header = block_lines[0].lstrip("# ").strip()
+                    arrow = ""
+                    for bl in block_lines[1:]:
+                        if bl.strip().startswith("→"):
+                            arrow = " " + bl.strip()
+                            break
+                    lines.append(f"- {header}{arrow}")
+                lines.append("")
+
+    # --- Experiments: Proposed (top 3) + Executing ---
+    proposed_match = re.search(
+        r"### Proposed\s*\n(.*?)(?=\n### |\n## |\Z)",
+        kb_content,
+        re.DOTALL,
+    )
+    executing_match = re.search(
+        r"### Executing\s*\n(.*?)(?=\n### |\n## |\Z)",
+        kb_content,
+        re.DOTALL,
+    )
+
+    exp_lines = []
+    if proposed_match:
+        body = proposed_match.group(1).strip()
+        if body and body != "(none yet)":
+            # Extract table rows (skip header/separator)
+            table_rows = [
+                r for r in body.split("\n")
+                if r.strip().startswith("|") and not r.strip().startswith("|-")
+            ]
+            # Skip header row
+            data_rows = [r for r in table_rows if not re.match(r"\|\s*ID\s*\|", r)]
+            for row in data_rows[:3]:
+                exp_lines.append(row)
+
+    if executing_match:
+        body = executing_match.group(1).strip()
+        if body and body != "(none yet)":
+            table_rows = [
+                r for r in body.split("\n")
+                if r.strip().startswith("|") and not r.strip().startswith("|-")
+            ]
+            data_rows = [r for r in table_rows if not re.match(r"\|\s*ID\s*\|", r)]
+            for row in data_rows:
+                exp_lines.append(row.rstrip() + " ← executing")
+
+    if exp_lines:
+        lines.append("**[Synthesis KB] Experiments**")
+        for el in exp_lines:
+            lines.append(el)
+        lines.append("")
+
+    # Add reference pointer
+    lines.append("_Full KB: .ralph/synthesis_kb.md_")
+
+    return "\n".join(lines)
+
+
+def update_pool_findings_from_kb(cwd: str = ".") -> None:
+    """
+    Read KB, render compact findings, and replace pool.md's Findings section.
+
+    Preserves non-KB findings (e.g. [PIVOT_RECOMMENDED], [STALE_PENDING],
+    User Decision, [HANDOFF] markers).
+    """
+    kb_content = read_synthesis_kb(cwd)
+    rendered = render_findings_from_kb(kb_content)
+
+    base = Path(cwd)
+    lock_path = base / POOL_LOCK_FILE
+
+    with file_lock(lock_path):
+        pool_content = _read_pool_unlocked(cwd)
+        if not pool_content:
+            return
+
+        # Find existing Findings section
+        # Pattern: "## Findings" or "## Shared Findings" until next "## "
+        for section_name in ("## Findings", "## Shared Findings"):
+            if section_name not in pool_content:
+                continue
+
+            findings_match = re.search(
+                rf"({re.escape(section_name)}\s*\n)(.*?)(?=\n## |\Z)",
+                pool_content,
+                re.DOTALL,
+            )
+            if not findings_match:
+                continue
+
+            old_body = findings_match.group(2)
+
+            # Preserve important non-KB markers
+            preserved = []
+            for line in old_body.split("\n"):
+                stripped = line.strip()
+                if any(marker in stripped for marker in (
+                    "[PIVOT_RECOMMENDED]",
+                    "[STALE_PENDING]",
+                    "[HANDOFF]",
+                    "[PLANNER_BUG]",
+                    "User Decision",
+                    "待用户测试",
+                )):
+                    preserved.append(line)
+
+            # Build new findings section
+            new_body = rendered
+            if preserved:
+                new_body = "\n".join(preserved) + "\n\n" + new_body
+
+            new_content = (
+                pool_content[:findings_match.start()]
+                + section_name + "\n\n"
+                + new_body + "\n"
+                + pool_content[findings_match.end():]
+            )
+            _atomic_write(base / POOL_FILE, new_content)
+            return
+
+        # Findings section doesn't exist yet — skip (will be created when needed)
+
+
+def update_kb_experiment_status(
+    experiment_id: str,
+    from_section: str,
+    to_section: str,
+    extra_cols: str = "",
+    cwd: str = ".",
+) -> None:
+    """
+    Move an experiment row between KB sections (Proposed → Executing → Completed).
+
+    Args:
+        experiment_id: e.g. "E001"
+        from_section: "Proposed", "Executing", or "Completed"
+        to_section: target section
+        extra_cols: additional columns to append (e.g. "| T049 | ... |")
+        cwd: working directory
+    """
+    kb = read_synthesis_kb(cwd)
+    if experiment_id not in kb:
+        return
+
+    # Find the row containing experiment_id in from_section
+    from_header = f"### {from_section}"
+    to_header = f"### {to_section}"
+
+    if from_header not in kb or to_header not in kb:
+        return
+
+    # Extract the row from from_section
+    lines = kb.split("\n")
+    row_to_move = None
+    row_idx = None
+    in_from = False
+
+    for idx, line in enumerate(lines):
+        if line.strip() == from_header:
+            in_from = True
+            continue
+        if in_from and line.strip().startswith("### "):
+            break
+        if in_from and experiment_id in line and line.strip().startswith("|"):
+            row_to_move = line
+            row_idx = idx
+            break
+
+    if row_to_move is None or row_idx is None:
+        return
+
+    # Remove row from from_section
+    lines.pop(row_idx)
+
+    # If extra_cols provided, append to row
+    if extra_cols:
+        row_to_move = row_to_move.rstrip().rstrip("|") + " " + extra_cols + " |"
+
+    # Find to_section and insert row after header + table header
+    in_to = False
+    insert_idx = None
+    for idx, line in enumerate(lines):
+        if line.strip() == to_header:
+            in_to = True
+            continue
+        if in_to and line.strip().startswith("### "):
+            # Insert before next section
+            insert_idx = idx
+            break
+        if in_to and line.strip().startswith("|"):
+            insert_idx = idx + 1  # After last table row
+        elif in_to and line.strip() == "(none yet)":
+            # Replace placeholder
+            lines[idx] = ""
+            insert_idx = idx + 1
+            break
+
+    if insert_idx is None:
+        # Append at end of to_section (find section and go to end)
+        for idx, line in enumerate(lines):
+            if line.strip() == to_header:
+                insert_idx = idx + 1
+                break
+
+    if insert_idx is not None:
+        lines.insert(insert_idx, row_to_move)
+        write_synthesis_kb("\n".join(lines), cwd)

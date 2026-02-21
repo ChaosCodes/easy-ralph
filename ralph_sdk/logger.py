@@ -7,6 +7,8 @@ Provides structured logging for:
 - History archiving
 """
 
+import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -246,8 +248,12 @@ async def stream_query(
     result_stats = None
     structured_output = None
 
+    # Store generator reference so we can explicitly close it in finally.
+    # Without this, GC'd generators fire aclose() in the wrong task context,
+    # causing anyio cancel scope CancelledError in the main orchestrator.
+    query_gen = query(prompt=prompt, options=options)
     try:
-        async for message in query(prompt=prompt, options=options):
+        async for message in query_gen:
             if isinstance(message, StreamEvent):
                 # Real-time display of partial content
                 if verbose and include_partial:
@@ -295,6 +301,12 @@ async def stream_query(
                 for i, block in enumerate(tool_blocks):
                     tool_count += 1
                     log_tool_call(cwd, agent_name, block.name, block.input)
+
+                    # Capture StructuredOutput tool input as fallback
+                    # (ResultMessage.structured_output can be None even when the model called the tool)
+                    if block.name == "StructuredOutput" and block.input:
+                        structured_output = block.input
+
                     if _should_show:
                         tool_line = format_tool_line(block.name, block.input, cwd)
                         if tool_line:
@@ -326,6 +338,19 @@ async def stream_query(
                 f"This is usually transient — retry may succeed. "
                 f"Details: {cli_errors}"
             ) from cli_errors
+    except (RuntimeError, asyncio.CancelledError) as e:
+        # anyio cancel scope cleanup in wrong task context (parallel execution)
+        if "cancel scope" in str(e).lower() and result_stats:
+            _console.print(f"[dim]⚠ Benign SDK cleanup error (results already collected)[/dim]")
+        else:
+            raise
+    finally:
+        # Explicitly close generator in SAME task context to prevent
+        # cross-task cancel scope error during parallel execution.
+        # Suppress errors from cleanup — the generator may already be closed,
+        # or anyio's cancel scope may fire during aclose().
+        with contextlib.suppress(RuntimeError, GeneratorExit, BaseExceptionGroup, asyncio.CancelledError):
+            await query_gen.aclose()
 
     return StreamResult(text=result_text, tool_count=tool_count, result_stats=result_stats, structured_output=structured_output, thinking_text=thinking_text)
 
@@ -371,61 +396,72 @@ async def stream_client_query(
     structured_output = None
 
     await client.query(prompt)
-    async for message in client.receive_response():
-        if isinstance(message, AssistantMessage):
-            text_blocks = []
-            thinking_blocks = []
-            tool_blocks = []
-            for block in message.content:
-                if isinstance(block, ThinkingBlock):
-                    thinking_blocks.append(block.thinking)
-                elif hasattr(block, "text") and block.text:
-                    result_text += block.text
-                    text_blocks.append(block.text)
-                if hasattr(block, "name") and hasattr(block, "input"):
-                    tool_blocks.append(block)
+    response_gen = client.receive_response()
+    try:
+        async for message in response_gen:
+            if isinstance(message, AssistantMessage):
+                text_blocks = []
+                thinking_blocks = []
+                tool_blocks = []
+                for block in message.content:
+                    if isinstance(block, ThinkingBlock):
+                        thinking_blocks.append(block.thinking)
+                    elif hasattr(block, "text") and block.text:
+                        result_text += block.text
+                        text_blocks.append(block.text)
+                    if hasattr(block, "name") and hasattr(block, "input"):
+                        tool_blocks.append(block)
 
-            # Accumulate thinking text
-            if thinking_blocks:
-                thinking_text += "\n".join(thinking_blocks)
+                # Accumulate thinking text
+                if thinking_blocks:
+                    thinking_text += "\n".join(thinking_blocks)
 
-            # Print thinking blocks (verbose only)
-            if verbose and thinking_blocks:
-                for t in thinking_blocks:
-                    _console.print(Panel(
-                        f"[dim magenta]{t}[/dim magenta]",
-                        title=f"[dim magenta]{emoji} Thinking[/dim magenta]",
-                        border_style="dim magenta",
-                        expand=False,
-                    ))
+                # Print thinking blocks (verbose only)
+                if verbose and thinking_blocks:
+                    for t in thinking_blocks:
+                        _console.print(Panel(
+                            f"[dim magenta]{t}[/dim magenta]",
+                            title=f"[dim magenta]{emoji} Thinking[/dim magenta]",
+                            border_style="dim magenta",
+                            expand=False,
+                        ))
 
-            # Print assistant text (full, dimmed)
-            if verbose and text_blocks:
-                full_text = "\n".join(t.strip() for t in text_blocks if t.strip())
-                if full_text:
-                    _console.print(f"     [italic dim]{emoji} {full_text}[/italic dim]")
+                # Print assistant text (full, dimmed)
+                if verbose and text_blocks:
+                    full_text = "\n".join(t.strip() for t in text_blocks if t.strip())
+                    if full_text:
+                        _console.print(f"     [italic dim]{emoji} {full_text}[/italic dim]")
 
-            # Print tool calls with parallel grouping
-            for i, block in enumerate(tool_blocks):
-                tool_count += 1
-                log_tool_call(cwd, agent_name, block.name, block.input)
-                if _should_show:
-                    tool_line = format_tool_line(block.name, block.input, cwd)
-                    if tool_line:
-                        if len(tool_blocks) > 1:
-                            if i == 0:
-                                prefix = "[dim]┌[/dim]"
-                            elif i == len(tool_blocks) - 1:
-                                prefix = "[dim]└[/dim]"
+                # Print tool calls with parallel grouping
+                for i, block in enumerate(tool_blocks):
+                    tool_count += 1
+                    log_tool_call(cwd, agent_name, block.name, block.input)
+
+                    # Capture StructuredOutput tool input as fallback
+                    # (ResultMessage.structured_output can be None even when the model called the tool)
+                    if block.name == "StructuredOutput" and block.input:
+                        structured_output = block.input
+
+                    if _should_show:
+                        tool_line = format_tool_line(block.name, block.input, cwd)
+                        if tool_line:
+                            if len(tool_blocks) > 1:
+                                if i == 0:
+                                    prefix = "[dim]┌[/dim]"
+                                elif i == len(tool_blocks) - 1:
+                                    prefix = "[dim]└[/dim]"
+                                else:
+                                    prefix = "[dim]│[/dim]"
+                                _console.print(f"  {prefix} [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
                             else:
-                                prefix = "[dim]│[/dim]"
-                            _console.print(f"  {prefix} [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
-                        else:
-                            _console.print(f"    [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
-        elif isinstance(message, ResultMessage):
-            result_stats = message
-            if hasattr(message, 'structured_output') and message.structured_output:
-                structured_output = message.structured_output
+                                _console.print(f"    [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
+            elif isinstance(message, ResultMessage):
+                result_stats = message
+                if hasattr(message, 'structured_output') and message.structured_output:
+                    structured_output = message.structured_output
+    finally:
+        with contextlib.suppress(RuntimeError, GeneratorExit, BaseExceptionGroup, asyncio.CancelledError):
+            await response_gen.aclose()
 
     return StreamResult(text=result_text, tool_count=tool_count, result_stats=result_stats, structured_output=structured_output, thinking_text=thinking_text)
 
@@ -668,6 +704,20 @@ class SessionLogger:
             "total_output_tokens": self.metrics.total_output_tokens,
         })
         self._save_metrics()
+
+    def log_synthesis(
+        self,
+        insight_count: int = 0,
+        experiment_count: int = 0,
+        trigger: str = "periodic",
+    ) -> None:
+        """Log a synthesis event."""
+        self._write_event({
+            "event": "synthesis",
+            "insight_count": insight_count,
+            "experiment_count": experiment_count,
+            "trigger": trigger,
+        })
 
     def log_error(self, error: str, context: Optional[dict] = None) -> None:
         """Log an error."""

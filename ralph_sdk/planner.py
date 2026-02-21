@@ -9,6 +9,7 @@ Reads goal.md and pool.md, outputs one of these actions:
 - DONE: Goal completed
 """
 
+import json
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -34,7 +35,19 @@ PLANNER_OUTPUT_SCHEMA = {
             "target": {"type": ["string", "null"]},
             "task_ids": {"type": "array", "items": {"type": "string"}},
             "reason": {"type": "string"},
-            "new_tasks": {"type": "string"},
+            "new_tasks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "task_type": {"type": "string"},
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["title", "description"],
+                },
+            },
             "question": {"type": "string"},
             "modification": {"type": "string"},
             "failure_assumptions": {"type": "string"},
@@ -74,6 +87,9 @@ class Action(Enum):
     PIVOT_WAIT = "pivot_wait"            # Explore alternatives while waiting (alias for HEDGE)
     PIVOT_ITERATION = "pivot_iteration"  # Change direction after multiple failed attempts
 
+    # Insight synthesis
+    SYNTHESIZE = "synthesize"            # Extract insights from experimental data
+
     # Session forking
     FORK = "fork"                        # Try multiple approaches via session forking
 
@@ -87,7 +103,7 @@ class PlannerDecision:
     target: Optional[str] = None  # task_id for most actions
     task_ids: list[str] = None    # for PARALLEL_EXECUTE: list of task IDs
     reason: str = ""
-    new_tasks: str = ""           # for CREATE/DECOMPOSE/HEDGE/PIVOT
+    new_tasks: list[dict] = None   # for CREATE/DECOMPOSE/HEDGE/PIVOT
     question: str = ""            # for ASK
     modification: str = ""        # for MODIFY
     hedge_for: Optional[str] = None        # for HEDGE: which task to hedge
@@ -113,6 +129,8 @@ class PlannerDecision:
     def __post_init__(self):
         if self.task_ids is None:
             self.task_ids = []
+        if self.new_tasks is None:
+            self.new_tasks = []
         if self.fork_approaches is None:
             self.fork_approaches = []
 
@@ -157,12 +175,27 @@ def _parse_planner_json(obj: dict) -> PlannerDecision:
     if isinstance(fork_approaches, str):
         fork_approaches = [fork_approaches]
 
+    # Parse new_tasks: could be list[dict], JSON string, or plain string
+    raw_new_tasks = obj.get("new_tasks", [])
+    new_tasks = []
+    if isinstance(raw_new_tasks, list):
+        new_tasks = [t for t in raw_new_tasks if isinstance(t, dict)]
+    elif isinstance(raw_new_tasks, str) and raw_new_tasks.strip():
+        try:
+            parsed = json.loads(raw_new_tasks)
+            if isinstance(parsed, list):
+                new_tasks = [t for t in parsed if isinstance(t, dict)]
+            elif isinstance(parsed, dict):
+                new_tasks = [parsed]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     return PlannerDecision(
         action=action,
         target=target,
         task_ids=task_ids,
         reason=obj.get("reason", ""),
-        new_tasks=obj.get("new_tasks", ""),
+        new_tasks=new_tasks,
         question=obj.get("question", ""),
         modification=obj.get("modification", ""),
         hedge_for=hedge_for,

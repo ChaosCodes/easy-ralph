@@ -36,13 +36,19 @@ from .pool import (
     Checkpoint,
     add_checkpoint,
     append_failure_assumptions,
+    append_hard_constraint,
     append_to_findings,
     append_to_progress_log,
     clear_handoff_note,
     clear_pivot_recommendation,
     compact_pool,
+    count_completed_tasks_with_results,
     create_checkpoint,
+    add_task_to_pool,
     ensure_task_files_exist,
+    init_task,
+    next_task_id,
+    task_exists,
     generate_feedback_template,
     generate_handoff_note,
     get_pending_checkpoints,
@@ -55,18 +61,22 @@ from .pool import (
     pool_needs_compaction,
     mark_pending_tasks_skipped,
     extract_task_ids_from_pool,
+    get_stale_pending_tasks,
     read_checkpoint_manifest,
     read_eval_config_from_goal,
     read_goal,
     read_handoff_note,
     read_pool,
+    read_synthesis_kb,
     read_task,
     save_checkpoint_manifest,
+    update_kb_experiment_status,
     update_pool_status,
     write_pool,
     write_task,
 )
 from .prompts import INITIALIZER_SYSTEM_PROMPT
+from .synthesizer import synthesize
 from .worker import work
 
 console = Console()
@@ -202,6 +212,7 @@ async def _execute_single_task(
     verbose: bool,
     semaphore: asyncio.Semaphore,
     thinking_budget: int | None = None,
+    no_sandbox: bool = False,
 ) -> ParallelTaskResult:
     """
     Execute a single task with semaphore for concurrency control.
@@ -220,7 +231,7 @@ async def _execute_single_task(
     async with semaphore:
         try:
             console.print(f"[cyan]⚡ Starting parallel task {task_id} ({task_type})...[/cyan]")
-            result = await work(task_id, task_type, cwd, verbose=verbose, thinking_budget=thinking_budget)
+            result = await work(task_id, task_type, cwd, verbose=verbose, thinking_budget=thinking_budget, no_sandbox=no_sandbox)
             return ParallelTaskResult(
                 task_id=task_id,
                 task_type=task_type,
@@ -244,6 +255,7 @@ async def execute_parallel_tasks(
     verbose: bool = False,
     max_parallel: int = DEFAULT_MAX_PARALLEL,
     thinking_budget: int | None = None,
+    no_sandbox: bool = False,
 ) -> ParallelExecutionResult:
     """
     Execute multiple tasks in parallel.
@@ -285,7 +297,7 @@ async def execute_parallel_tasks(
 
     # Create coroutines for all tasks
     coroutines = [
-        _execute_single_task(task_id, task_type, cwd, verbose, semaphore, thinking_budget=thinking_budget)
+        _execute_single_task(task_id, task_type, cwd, verbose, semaphore, thinking_budget=thinking_budget, no_sandbox=no_sandbox)
         for task_id, task_type in tasks_with_types
     ]
 
@@ -402,20 +414,111 @@ def _print_session_summary(logger: SessionLogger, iterations: int) -> None:
     console.print(f"\n[dim]Session complete: {' · '.join(parts)}[/dim]")
 
 
-def _ensure_new_tasks(
+def _create_tasks_from_decision(
     decision: "PlannerDecision",
     logger: "SessionLogger",
     cwd: str,
-    task_type: str = "EXPLORE",
-    reason: str = "",
-) -> None:
-    """Create task files for new tasks from a planner decision."""
-    if decision.new_tasks:
+    default_task_type: str = "IMPLEMENT",
+) -> list[str]:
+    """
+    Create task files from planner decision's new_tasks field.
+
+    Parses the structured task data, auto-assigns IDs if missing,
+    creates task files, and adds entries to pool.md.
+
+    Returns list of created task IDs.
+    """
+    if not decision.new_tasks:
+        # Fallback: scan pool.md for task IDs without files
         created = ensure_task_files_exist(cwd)
         if created:
-            console.print(f"[dim]创建了任务: {', '.join(created)}[/dim]")
+            console.print(f"[dim]Auto-created missing task files: {', '.join(created)}[/dim]")
             for task_id in created:
-                logger.log_task_created(task_id, task_type, reason)
+                logger.log_task_created(task_id, default_task_type, "Auto-created")
+        return created
+
+    created = []
+    for task_info in decision.new_tasks:
+        task_id = task_info.get("task_id") or next_task_id(cwd)
+        task_type = task_info.get("task_type", default_task_type)
+        title = task_info.get("title", f"Task {task_id}")
+        description = task_info.get("description", decision.reason)
+        estimated_cost = task_info.get("estimated_cost", "")
+
+        if not task_exists(task_id, cwd):
+            init_task(task_id, task_type, title, description, cwd, estimated_cost=estimated_cost)
+            add_task_to_pool(task_id, task_type, title, cwd, estimated_cost=estimated_cost)
+            created.append(task_id)
+            logger.log_task_created(task_id, task_type, title)
+
+    # Also handle any tasks the planner may have added to pool.md directly
+    extra = ensure_task_files_exist(cwd)
+    for task_id in extra:
+        if task_id not in created:
+            created.append(task_id)
+            logger.log_task_created(task_id, default_task_type, "Auto-created")
+
+    if created:
+        console.print(f"[dim]创建了任务: {', '.join(created)}[/dim]")
+
+    return created
+
+
+def _auto_create_tasks_from_synthesis(
+    synthesis_result,
+    logger: "SessionLogger",
+    cwd: str,
+    max_auto_tasks: int = 2,
+) -> list[str]:
+    """
+    Auto-create EXPLORE tasks from synthesis proposed_experiments
+    that are marked as diagnostic (P1 priority).
+
+    Only creates up to max_auto_tasks to avoid task explosion.
+    Also updates KB experiment status: Proposed → Executing.
+    Returns list of created task IDs.
+    """
+    if not synthesis_result.proposed_experiments:
+        return []
+
+    created = []
+    for exp in synthesis_result.proposed_experiments:
+        if len(created) >= max_auto_tasks:
+            break
+        if not exp.is_diagnostic:
+            continue
+
+        task_id = next_task_id(cwd)
+        title = f"[Auto-Synthesis] {exp.name}"
+        description = (
+            f"**Insight tested**: {exp.insight_tested}\n"
+            f"**Method**: {exp.method}\n"
+            f"**Expected outcome**: {exp.expected_outcome}\n"
+            f"**Differs from tried**: {exp.differs_from_tried}"
+        )
+
+        if not task_exists(task_id, cwd):
+            init_task(task_id, "EXPLORE", title, description, cwd)
+            add_task_to_pool(task_id, "EXPLORE", title, cwd)
+            created.append(task_id)
+            logger.log_task_created(task_id, "EXPLORE", title)
+
+            # Update KB: move experiment from Proposed → Executing
+            # Try to find experiment ID from the name
+            exp_id_match = re.search(r"(E\d+)", exp.name)
+            if exp_id_match:
+                update_kb_experiment_status(
+                    experiment_id=exp_id_match.group(1),
+                    from_section="Proposed",
+                    to_section="Executing",
+                    extra_cols=f"| {task_id} | {exp.name}",
+                    cwd=cwd,
+                )
+
+    if created:
+        console.print(f"[dim]🔬 Auto-created {len(created)} diagnostic task(s) from synthesis: {', '.join(created)}[/dim]")
+
+    return created
 
 
 def _handle_pivot_tail(
@@ -429,6 +532,40 @@ def _handle_pivot_tail(
     append_to_progress_log(progress_msg, cwd)
     clear_pivot_recommendation(decision.target, cwd)
     logger.log_iteration_end(iteration, decision.action.value)
+
+
+def _update_kb_on_task_complete(task_id: str, result_summary: str, cwd: str = ".") -> None:
+    """
+    When a task completes, check if it corresponds to an Executing experiment in KB.
+    If so, move the experiment to Completed with result.
+    """
+    kb = read_synthesis_kb(cwd)
+    if task_id not in kb:
+        return
+
+    # Find experiment ID associated with this task in Executing section
+    executing_match = re.search(
+        r"### Executing\s*\n(.*?)(?=\n### |\n## |\Z)",
+        kb,
+        re.DOTALL,
+    )
+    if not executing_match:
+        return
+
+    for line in executing_match.group(1).split("\n"):
+        if task_id in line and line.strip().startswith("|"):
+            # Extract experiment ID from the row
+            cols = [c.strip() for c in line.split("|")]
+            cols = [c for c in cols if c]
+            if cols and re.match(r"E\d+", cols[0]):
+                update_kb_experiment_status(
+                    experiment_id=cols[0],
+                    from_section="Executing",
+                    to_section="Completed",
+                    extra_cols=f"| {result_summary}",
+                    cwd=cwd,
+                )
+                return
 
 
 def _clean_ralph_dir(cwd: str = ".") -> None:
@@ -454,6 +591,8 @@ async def run(
     target_score: int = None,
     explore_mode: bool = False,
     thinking_budget: int | None = None,
+    no_sandbox: bool = False,
+    synthesis_interval: int = 3,
 ) -> bool:
     """
     Run the full task pool loop.
@@ -475,6 +614,8 @@ async def run(
             Continues exploring alternatives even after tasks complete.
         thinking_budget: Token budget for extended thinking. None=agent defaults,
             0=off for all agents, N=use N for all agents.
+        synthesis_interval: Run synthesis after every N new completed tasks.
+            0 disables periodic synthesis. Default 3.
 
     Returns:
         True if goal was completed, False if max iterations reached
@@ -555,7 +696,11 @@ async def run(
     # Phase 3: Iteration loop
     console.print("\n[bold]Phase 3: Executing tasks[/bold]\n")
 
+    # Adaptive synthesis: track completions since last synthesis
+    tasks_at_last_synthesis = 0
+
     consecutive_skips = 0
+    consecutive_empty_creates = 0
 
     # Auto-continue: skip planner when last eval passed but below target (Exp 3)
     last_iter_state: dict = {}  # {action, verdict, score, task_id, should_pivot}
@@ -567,6 +712,7 @@ async def run(
     cosmetic_stagnation_count: dict[str, int] = {}  # task_id → consecutive cosmetic-only rounds
 
     for i in range(1, max_iterations + 1):
+      try:
         # Build cumulative stats for iteration header
         elapsed = (datetime.now() - logger._start_time).total_seconds()
         total_tokens = logger.metrics.total_input_tokens + logger.metrics.total_output_tokens
@@ -594,6 +740,44 @@ async def run(
                     append_to_progress_log("COMPACTION - pool.md compressed to reduce context noise", cwd)
             except Exception as e:
                 console.print(f"[dim]📦 Compaction failed (non-critical): {e}[/dim]")
+
+        # Stale pending detection: flag tasks that have been pending too long
+        stale_tasks = get_stale_pending_tasks(cwd, threshold=5)
+        if stale_tasks:
+            # Only write finding if not already flagged (dedup)
+            pool_content_check = read_pool(cwd)
+            unflagged = [t for t in stale_tasks if f"[STALE_PENDING] {t}" not in pool_content_check]
+            if unflagged:
+                append_to_findings(
+                    f"**[STALE_PENDING]** Tasks idle for 5+ iterations: {', '.join(unflagged)}. "
+                    "Must EXECUTE, DELETE, or address these before creating new tasks.",
+                    cwd,
+                )
+                console.print(f"[yellow]⚠ Stale pending tasks detected: {', '.join(unflagged)}[/yellow]")
+
+        # Adaptive synthesis: trigger after N new completed tasks
+        # Interval decreases as the experiment pool grows (more data → synthesize more often)
+        if synthesis_interval > 0:
+            completed_now = count_completed_tasks_with_results(cwd, task_type="IMPLEMENT")
+            effective_interval = max(1, synthesis_interval - (completed_now // 6))
+            if completed_now - tasks_at_last_synthesis >= effective_interval:
+                console.print("[dim]🔬 Running periodic insight synthesis...[/dim]")
+                try:
+                    synthesis_result = await synthesize(cwd, verbose=verbose, thinking_budget=thinking_budget)
+                    if synthesis_result.insights:
+                        console.print(f"[dim]🔬 {len(synthesis_result.insights)} insights extracted[/dim]")
+                    if synthesis_result.result_stats:
+                        logger.log_query_stats(synthesis_result.result_stats)
+                    logger.log_synthesis(
+                        insight_count=len(synthesis_result.insights),
+                        experiment_count=len(synthesis_result.proposed_experiments),
+                        trigger="periodic",
+                    )
+                    # Auto-create diagnostic tasks from synthesis
+                    _auto_create_tasks_from_synthesis(synthesis_result, logger, cwd)
+                except Exception as e:
+                    console.print(f"[dim]🔬 Synthesis failed (non-critical): {e}[/dim]")
+                tasks_at_last_synthesis = completed_now
 
         # Auto-continue: skip planner when last eval passed but below target (Exp 3)
         auto_continue = (
@@ -707,19 +891,71 @@ async def run(
             return True
 
         # Handle CREATE / DECOMPOSE / DELETE
-        # These are handled by the planner itself (it writes to files)
         if decision.action in (Action.CREATE, Action.DECOMPOSE, Action.DELETE):
             append_to_progress_log(
                 f"{decision.action.value.upper()} - {decision.reason}",
                 cwd
             )
-            # Ensure task files exist for any new tasks added to pool.md
+            # Create task files from planner's new_tasks data
             if decision.action in (Action.CREATE, Action.DECOMPOSE):
-                created = ensure_task_files_exist(cwd)
-                if created:
-                    console.print(f"[dim]Auto-created missing task files: {', '.join(created)}[/dim]")
-                    for task_id in created:
-                        logger.log_task_created(task_id, "IMPLEMENT", "Auto-created")
+                created = _create_tasks_from_decision(decision, logger, cwd)
+                if not created:
+                    consecutive_empty_creates += 1
+                    if consecutive_empty_creates >= 3:
+                        append_to_findings(
+                            "**[PLANNER_BUG]** CREATE returned empty new_tasks "
+                            f"{consecutive_empty_creates} times in a row. "
+                            "Breaking CREATE loop — planner should EXECUTE or EXPLORE instead.",
+                            cwd,
+                        )
+                        console.print(
+                            f"[red]⚠ CREATE dead loop detected "
+                            f"({consecutive_empty_creates} empty CREATEs). "
+                            f"Wrote [PLANNER_BUG] finding.[/red]"
+                        )
+                        consecutive_empty_creates = 0
+                else:
+                    consecutive_empty_creates = 0
+            logger.log_iteration_end(i, decision.action.value)
+            continue
+
+        # Handle SYNTHESIZE
+        if decision.action == Action.SYNTHESIZE:
+            console.print("\n[yellow]🔬 Running insight synthesis (planner-requested)...[/yellow]\n")
+            syn_insights = 0
+            syn_experiments = 0
+            try:
+                synthesis_result = await synthesize(cwd, verbose=verbose, thinking_budget=thinking_budget)
+                syn_insights = len(synthesis_result.insights)
+                syn_experiments = len(synthesis_result.proposed_experiments)
+
+                if synthesis_result.insights:
+                    console.print(f"[green]✓ {syn_insights} insights extracted[/green]")
+                    for ins in synthesis_result.insights:
+                        console.print(f"  [dim]- {ins.observation[:100]}[/dim]")
+                else:
+                    console.print("[dim]No new insights found[/dim]")
+
+                if synthesis_result.proposed_experiments:
+                    console.print(f"[dim]🔬 {syn_experiments} experiments proposed[/dim]")
+
+                if synthesis_result.result_stats:
+                    logger.log_query_stats(synthesis_result.result_stats)
+                logger.log_synthesis(
+                    insight_count=syn_insights,
+                    experiment_count=syn_experiments,
+                    trigger="planner",
+                )
+                # Auto-create diagnostic tasks from synthesis
+                _auto_create_tasks_from_synthesis(synthesis_result, logger, cwd)
+            except Exception as e:
+                console.print(f"[red]✗ Synthesis failed: {e}[/red]")
+                logger.log_error(f"Synthesis failed: {e}")
+
+            append_to_progress_log(
+                f"SYNTHESIZE - {syn_insights} insights, {syn_experiments} experiments proposed",
+                cwd,
+            )
             logger.log_iteration_end(i, decision.action.value)
             continue
 
@@ -731,7 +967,7 @@ async def run(
                 continue
 
             console.print(f"\n[yellow]Exploring {decision.target}...[/yellow]\n")
-            result = await work(decision.target, "EXPLORE", cwd, verbose=verbose, thinking_budget=thinking_budget)
+            result = await work(decision.target, "EXPLORE", cwd, verbose=verbose, thinking_budget=thinking_budget, no_sandbox=no_sandbox)
 
             # Log worker stats
             if result.result_stats:
@@ -782,6 +1018,7 @@ async def run(
                     verbose=verbose,
                     max_parallel=max_parallel,
                     thinking_budget=thinking_budget,
+                    no_sandbox=no_sandbox,
                 )
 
                 # Log each task result
@@ -837,7 +1074,7 @@ async def run(
             # Fork each approach as a parallel EXPLORE task
             fork_results = []
             for approach in decision.fork_approaches:
-                result = await work(decision.target, "EXPLORE", cwd, verbose=verbose, thinking_budget=thinking_budget)
+                result = await work(decision.target, "EXPLORE", cwd, verbose=verbose, thinking_budget=thinking_budget, no_sandbox=no_sandbox)
                 fork_results.append(result)
 
             # Log results
@@ -885,6 +1122,7 @@ async def run(
                 verbose=verbose,
                 thinking_budget=thinking_budget,
                 adversarial_findings=adv_findings,
+                no_sandbox=no_sandbox,
             )
 
             # Log worker stats
@@ -1102,6 +1340,12 @@ async def run(
                         f"EXECUTE {decision.target} - PASSED (score: {eval_result.overall_score:.0f}/{target_score})",
                         cwd
                     )
+                    # Update KB: move matching experiment from Executing → Completed
+                    _update_kb_on_task_complete(
+                        decision.target,
+                        f"score {eval_result.overall_score:.0f}/{target_score}, PASSED",
+                        cwd,
+                    )
                 else:
                     console.print(f"[yellow]⚠ Task {decision.target} needs improvement (score: {eval_result.overall_score:.0f}/{target_score})[/yellow]")
                     append_to_progress_log(
@@ -1230,7 +1474,7 @@ async def run(
                 append_failure_assumptions(decision.target, decision.failure_assumptions, cwd)
                 console.print(f"[dim]记录了失败假设到 pool.md[/dim]")
 
-            _ensure_new_tasks(decision, logger, cwd, "EXPLORE", "Hedge alternative")
+            _create_tasks_from_decision(decision, logger, cwd, "EXPLORE")
             _handle_pivot_tail(
                 decision, logger, i,
                 f"HEDGE {decision.target} - 探索替代方案: {decision.reason[:100]}",
@@ -1258,7 +1502,7 @@ async def run(
                 task_id=decision.target,
             )
 
-            _ensure_new_tasks(decision, logger, cwd, "EXPLORE", "Pivot to new direction")
+            _create_tasks_from_decision(decision, logger, cwd, "EXPLORE")
             _handle_pivot_tail(
                 decision, logger, i,
                 f"PIVOT_RESEARCH {decision.target} - 放弃 [{decision.current_approach}] 因为 [{decision.blocker}]，转向 [{decision.new_direction}]",
@@ -1287,13 +1531,25 @@ async def run(
                 task_id=decision.target,
             )
 
-            _ensure_new_tasks(decision, logger, cwd, "IMPLEMENT", "Pivot to new approach")
+            _create_tasks_from_decision(decision, logger, cwd, "IMPLEMENT")
             _handle_pivot_tail(
                 decision, logger, i,
                 f"PIVOT_ITERATION {decision.target} - 尝试 {decision.attempt_count} 次，最高分 {decision.best_score}，转向 [{decision.new_approach}]",
                 cwd,
             )
             continue
+
+      except asyncio.CancelledError:
+        # SDK async generator GC can cancel the main task via anyio cancel scopes.
+        # async_generator_athrow = Python GC finalizer for unclosed generators.
+        # This is benign — actual work completed, only current await interrupted.
+        #
+        # Safe to catch unconditionally: Ctrl+C raises KeyboardInterrupt (not
+        # CancelledError), and this codebase has no task.cancel() or wait_for()
+        # calls, so CancelledError here is always from anyio cancel scope cleanup.
+        console.print(f"[dim]⚠ Recovered from SDK async generator cleanup (retrying iteration {i})[/dim]")
+        logger.log_iteration_end(i, "RECOVERED", reason="SDK cancel scope cleanup")
+        continue
 
     console.print(f"\n[yellow]Reached max iterations ({max_iterations})[/yellow]")
     _print_session_summary(logger, max_iterations)
@@ -1310,6 +1566,8 @@ async def resume(
     target_score: int = None,
     explore_mode: bool = False,
     thinking_budget: int | None = None,
+    no_sandbox: bool = False,
+    synthesis_interval: int = 3,
 ) -> bool:
     """
     Resume an existing task pool session.
@@ -1324,6 +1582,8 @@ async def resume(
         max_parallel: Maximum number of concurrent workers for PARALLEL_EXECUTE
         target_score: Target quality score. If None, parsed from goal.md or defaults to 95.
         explore_mode: If True, don't DONE until user explicitly says stop.
+        synthesis_interval: Run synthesis after every N new completed tasks.
+            0 disables periodic synthesis. Default 3.
 
     Returns:
         True if goal was completed, False if max iterations reached
@@ -1413,4 +1673,6 @@ async def resume(
         target_score=target_score,
         explore_mode=explore_mode,
         thinking_budget=thinking_budget,
+        no_sandbox=no_sandbox,
+        synthesis_interval=synthesis_interval,
     )

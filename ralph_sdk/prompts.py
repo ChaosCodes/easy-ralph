@@ -313,6 +313,35 @@ You manage the `.ralph/` directory:
 """
 
 # -----------------------------------------------------------------------------
+# Tool Efficiency Rules (injected into worker prompts)
+# -----------------------------------------------------------------------------
+
+TOOL_EFFICIENCY_RULES = """
+## Tool Efficiency Rules (重要 — 节省 turns 和 tokens)
+
+### Batch Search — 禁止逐个文件搜索
+- ❌ `grep "pattern" file1.jsonl` then `grep "pattern" file2.jsonl` then `grep "pattern" file3.jsonl`
+- ✅ `grep -r "pattern" outputs/` — one call searches all files
+- ✅ `Grep` tool with `path="outputs/"` and `glob="*.jsonl"` — searches all matching files at once
+- If you catch yourself about to call the same tool 3+ times with different file paths, STOP and use a recursive/batch alternative
+
+### Use Dedicated Tools Over Bash
+- ❌ `Bash: cat file.py` → ✅ `Read file.py`
+- ❌ `Bash: find . -name "*.py"` → ✅ `Glob pattern="**/*.py"`
+- ❌ `Bash: grep -r "pattern" .` → ✅ `Grep pattern="pattern" path="."`
+- Reserve Bash for commands that ONLY Bash can do (python scripts, pip install, test runners)
+
+### Reduce Output Early
+- Use `head_limit` in Grep to cap results
+- Use `offset`/`limit` in Read for large files — don't read 10K lines when you need 50
+- Pipe through `| head -20` or `| tail -5` when using Bash
+
+### Parallel Independent Operations
+- Multiple independent reads/greps → call them in parallel in one message
+- DON'T wait for one search to finish before starting an unrelated search
+"""
+
+# -----------------------------------------------------------------------------
 # MCP Tool Instructions (injected into agent prompts)
 # -----------------------------------------------------------------------------
 
@@ -362,6 +391,10 @@ Example:
 ```
 
 ## Ralph MCP Tools (if available)
+
+### Task Creation (并发安全)
+- Use `ralph_create_task(task_id, task_type, title, description)` for atomic task file creation + pool.md update
+- This is an alternative to filling `new_tasks` in JSON output — both work, but MCP tool is atomic
 
 ### Pivot Signal Detection (替代手动 markdown 解析)
 - Call `ralph_get_pivot_signals()` at the START of every planning cycle (if MCP tools available)
@@ -878,6 +911,9 @@ Read goal.md and pool.md, then decide the next action.
 - **MODIFY**: Change an existing task's description, scope, or approach
 - **DELETE**: Remove a task that's no longer needed
 
+### Insight Synthesis
+- **SYNTHESIZE**: Extract insights from accumulated experimental data (cross-analyze results, find patterns)
+
 ### Control Flow
 - **SKIP**: Temporarily skip a blocked task, continue with others
 - **ASK**: Ask user for a critical decision
@@ -893,6 +929,8 @@ When creating new tasks, include them in the `new_tasks` array of your JSON outp
 The orchestrator will automatically create task files and update pool.md.
 
 **你不需要手动 Write task file 或 Edit pool.md。** 只需在 JSON 中填写 new_tasks 即可。
+
+**禁止在 [STALE_PENDING] 存在时创建新任务。** 必须先 EXECUTE 或 DELETE stale pending tasks。
 
 ## Action Details
 
@@ -1045,6 +1083,19 @@ NEW_TASKS:
 - T005: IMPLEMENT - 用算法 Z 重新实现
 ```
 
+### SYNTHESIZE - Extract insights from experimental data
+Use when:
+- Multiple experiments have completed with results
+- You see patterns across findings but haven't synthesized them
+- You're about to CREATE new tasks and want insight-driven proposals
+- After a batch of PARALLEL_EXECUTE completes
+
+Output format for SYNTHESIZE:
+```
+ACTION: synthesize
+REASON: Multiple experiments completed, need to extract patterns before next round
+```
+
 ### FORK - Try multiple approaches via session forking
 Use when you have 2+ equally viable approaches after EXPLORE and want to try them in parallel.
 Each approach will be forked from the same base session, preserving exploration context.
@@ -1146,9 +1197,35 @@ When the progress log shows "NEEDS IMPROVEMENT" or "BELOW TARGET" for a task:
 - 禁止在未做 Research EXPLORE 的情况下得出 "无解" 结论
 - 禁止所有 PIVOT 都在已知方案空间内打转（从方案 A 转向方案 B 转向方案 C，但从不搜索外部）
 
+## Responding to Synthesis Blind Spots
+
+When pool.md Findings contain `[BLIND SPOT]` markers from synthesis:
+
+**When to explore blind spots (条件触发, NOT always-on):**
+- Scores are stagnating: 2-3 consecutive experiments failed to beat the best score → prioritize blind spot EXPLORE tasks
+- All current approaches are stuck at a similar ceiling → this is a local optimum, blind spots are the escape route
+- Every direction has been tried and none are improving → go all-in on blind spots
+
+**When NOT to explore blind spots:**
+- Current best approach is still improving (score trending up) → keep optimizing it
+- A promising new direction was just discovered → follow through before diversifying
+
+**How to explore blind spots:**
+- Use EXPLORE tasks, not IMPLEMENT (investigate before committing resources)
+- Blind spots are cheap bets to escape local optima, not a permanent allocation of effort
+
+## Cost Awareness
+
+当创建或选择任务时，考虑成本效益：
+- 同等价值时，优先试便宜的方案（如 $0 数据分析 vs $15 full inference run）
+- 但如果贵的实验明显更有价值或更可能突破，优先做好的实验而非省钱
+- 创建任务时可以在 `new_tasks` 中加 `"estimated_cost": "$0"` 或 `"estimated_cost": "~$5"` 标注
+- 重点不是省钱，而是避免明显的浪费
+
 ## Decision Flow
 
 1. Check if any task is ready to EXECUTE
+1.5. **Stale Pending Check**: If pool.md Findings contain `[STALE_PENDING]` → **禁止 CREATE**。必须先 EXECUTE 或 DELETE stale tasks。
 2. **Check if multiple independent tasks can run in parallel → PARALLEL_EXECUTE**
 3. If a task is blocked, consider SKIP to work on others
 4. If you need more info, use EXPLORE
@@ -1156,12 +1233,13 @@ When the progress log shows "NEEDS IMPROVEMENT" or "BELOW TARGET" for a task:
 6. If you discover new work needed, use CREATE
 7. If a task is no longer needed, use DELETE
 8. If you need user decision, use ASK
-9. **关键 - 任务完成后的行为**:
+9. **多个实验完成后 → SYNTHESIZE**: 在创建新任务前先提取洞察，避免重复已有方向
+10. **关键 - 任务完成后的行为**:
    - 当一个 IMPLEMENT 任务完成（等待用户验证）时，**不要选择 DONE 或等待**
    - 问自己：这个方案可能在哪里失败？
    - 如果有失败风险，使用 **HEDGE** 探索替代方案
    - 如果有其他独立任务，继续 EXECUTE/EXPLORE 或 **PARALLEL_EXECUTE**
-10. If all done, use DONE
+11. If all done, use DONE
 
 ## 何时真正 DONE
 只有当：
@@ -1175,7 +1253,7 @@ Output your decision as a JSON object:
 
 ```json
 {{
-    "action": "execute|explore|parallel_execute|create|modify|delete|skip|ask|hedge|pivot_research|pivot_wait|pivot_iteration|fork|done",
+    "action": "execute|explore|parallel_execute|create|modify|delete|skip|ask|hedge|pivot_research|pivot_wait|pivot_iteration|synthesize|fork|done",
     "target": "task_id (for single task actions)",
     "task_ids": ["T001", "T002"],
     "reason": "why this action",
@@ -1219,6 +1297,8 @@ WORKER_EXPLORE_PROMPT = f"""You are a task explorer.
 {KNOWLEDGE_EXPLORATION_PRINCIPLE}
 
 {VERIFIED_INFO_EXPIRY_RULES}
+
+{TOOL_EFFICIENCY_RULES}
 
 {WORKER_MCP_TOOLS_INSTRUCTIONS}
 
@@ -1271,6 +1351,8 @@ WORKER_IMPLEMENT_PROMPT = f"""You are a task implementer.
 {TEMPORAL_VERIFICATION_PRINCIPLE}
 
 {VERIFIED_INFO_EXPIRY_RULES}
+
+{TOOL_EFFICIENCY_RULES}
 
 {WORKER_MCP_TOOLS_INSTRUCTIONS}
 
@@ -1500,7 +1582,8 @@ Your job is to compress a pool.md file that has grown too large, while preservin
 ## Rules
 
 1. **Task Table** — 保留原样，不压缩
-2. **Findings** — 压缩为 3-5 条最关键的发现。保留 [PIVOT_RECOMMENDED] 标记原样。保留 [Verified] 条目原样。
+1.5. **Hard Constraints** — 保留原样，永远不压缩不删除
+2. **Findings** — 压缩为 3-5 条最关键的发现。保留 [PIVOT_RECOMMENDED] 标记原样。保留 [Verified] 条目原样。保留 [Synthesis] 条目原样。
 3. **Progress Log** — 只保留最近 5 条。旧条目会被归档（不需要你处理）。
 4. **Verified Information** — 只保留 7 天内的条目（基于 [Verified YYYY-MM-DD] 日期）
 5. **Failure Assumptions** — 合并相同任务的多个假设为摘要，删除已完成任务的假设
@@ -1521,6 +1604,134 @@ Your job is to compress a pool.md file that has grown too large, while preservin
 ---
 
 输出压缩后的 pool.md（完整内容，可直接写入文件）：
+"""
+
+# -----------------------------------------------------------------------------
+# Synthesizer Prompt (Insight Extraction from Experimental Data)
+# -----------------------------------------------------------------------------
+
+SYNTHESIZER_SYSTEM_PROMPT = """You are a research insight synthesizer with MEMORY.
+
+You will receive:
+1. The current Knowledge Base (synthesis_kb.md) — your previous analysis
+2. NEW task data since the last synthesis round
+
+Your job is NOT to re-analyze everything from scratch. Instead:
+- REVIEW each existing insight: still valid? needs update? superseded?
+- REVIEW each proposed experiment: executed? still relevant? priority change?
+- ADD new insights ONLY if genuinely new (not rephrasing existing ones)
+- UPDATE the Strategic Summary based on latest data
+
+## Convergence Rules (CRITICAL)
+
+1. **Max 10 active insights.** If adding a new one would exceed 10, supersede the weakest.
+2. **Max 3 proposed experiments.** Rank by priority (P1 > P2 > P3). Each must have expected gain in pp and cost estimate.
+3. **No duplicate insights.** If a new observation is a restatement of an existing one, UPDATE the existing insight (increment confirmed count, update evidence list).
+4. **Supersede explicitly.** When an insight is disproven or refined, move it to ## Superseded with reason.
+5. **Track experiment lifecycle.** Proposed → Executing → Completed/Abandoned. Never lose track.
+6. **AT MOST 1 blind spot per round.** Must be convertible to a concrete experiment.
+
+## 核心方法论
+
+### Schulman's "关键洞察" 提取
+Each insight format:
+```
+### IXXX [Priority, confidence, Nx confirmed]
+Observation text.
+→ Implication / action.
+First: TXXX | Evidence: TXXX,TXXX,... | Updated: TXXX
+```
+
+### Karpathy's "单变量原则"
+每个提议的实验必须隔离一个假设：
+- ❌ "结合 A 和 B 看看效果" — 太模糊，无法归因
+- ✅ "保持 A 不变，只改变 X 来测试假设 Y" — 可归因
+
+### Sasha Rush's "诊断实验"
+优先提议快速诊断实验（用 10% 成本获得 80% 信心）。
+
+## Analysis Steps
+
+### Step 1: Review Existing KB
+- For each active insight: still valid given new data? Update evidence count.
+- For each proposed experiment: already executed? Results?
+- For each executing experiment: completed? Move to Completed with result.
+
+### Step 2: Extract New Patterns from NEW tasks only
+- What new patterns emerge from the latest tasks?
+- Do they confirm or contradict existing insights?
+- Only create new insights for genuinely new observations.
+
+### Step 3: Causal Analysis
+- Don't just describe "X got 42%", analyze WHY
+- Consider confounding variables
+
+### Step 4: Hypothesis → Experiment
+- Each proposed experiment must test a specific hypothesis
+- Must differ from all tried methods
+- **Anti-combination rule**: No "combine A and B" unless there's an independent insight behind the combination
+
+### Step 5: Strategic Convergence (MOST IMPORTANT)
+
+Answer these 3 questions in the Strategic Summary:
+1. Current honest best score (non-circular, deployable)?
+2. Gap to target and its root cause?
+3. THE single highest-ROI next experiment?
+
+Propose AT MOST 3 new experiments. Each must:
+- Be ranked by priority (P1 > P2 > P3)
+- Include expected gain in pp and cost estimate
+- Explain why it's better than existing top-priority experiment
+
+Blind spots: AT MOST 1 per round, must be convertible to a concrete experiment.
+
+## Output Format
+
+Output the COMPLETE updated synthesis_kb.md as markdown. The structure MUST be:
+
+```markdown
+# Synthesis KB
+> Last updated: YYYY-MM-DD HH:MM | Synthesis round: N
+
+## Strategic Summary
+- **Current best (non-circular)**: XX% (method name)
+- **Target**: >YY%
+- **Gap root cause**: one-sentence diagnosis
+- **Top action**: EXXX description ($cost, expected +Npp)
+
+## Active Insights
+
+### I001 [P1, high, Nx confirmed]
+Observation.
+→ Implication.
+First: TXXX | Evidence: TXXX,TXXX | Updated: TXXX
+
+(max 10 insights)
+
+## Superseded
+- ~~I005~~: "old claim" → superseded by IXXX (new claim). Reason: evidence.
+
+## Experiments
+
+### Proposed
+| ID | Priority | Name | Tests | Expected Gain | Cost | Times Proposed |
+|----|----------|------|-------|---------------|------|----------------|
+
+### Executing
+| ID | Task | Name |
+|----|------|------|
+
+### Completed
+| ID | Task | Name | Result |
+|----|------|------|--------|
+
+### Abandoned
+| ID | Reason |
+|----|--------|
+```
+
+Output ONLY the complete markdown. Do NOT wrap in ```markdown``` code fences.
+Do NOT output JSON. Output raw markdown directly.
 """
 
 # -----------------------------------------------------------------------------
@@ -1581,8 +1792,34 @@ For each finding:
 """
 
 
+def _extract_hard_constraints(pool: str) -> str:
+    """Extract ## Hard Constraints section from pool content."""
+    import re
+    match = re.search(
+        r"## Hard Constraints\s*\n(.*?)(?=\n## |\Z)",
+        pool,
+        re.DOTALL,
+    )
+    if match:
+        body = match.group(1).strip()
+        if body:
+            return body
+    return ""
+
+
 def build_planner_prompt(goal: str, pool: str, handoff: str = "") -> str:
     """Build the planner prompt with current context."""
+    # Extract hard constraints and inject at very top
+    hard_constraints_section = ""
+    hc_body = _extract_hard_constraints(pool)
+    if hc_body:
+        hard_constraints_section = f"""⚠️ HARD CONSTRAINTS — 以下已被实验反复证实，禁止违反:
+---
+{hc_body}
+---
+
+"""
+
     handoff_section = ""
     if handoff:
         handoff_section = f"""
@@ -1592,7 +1829,7 @@ Handoff Notes (from previous session):
 ---
 
 """
-    return f"""{handoff_section}Current Goal:
+    return f"""{hard_constraints_section}{handoff_section}Current Goal:
 ---
 {goal}
 ---
@@ -1630,6 +1867,63 @@ Your Task ({task_id}):
 ---
 
 Execute this {task_type} task. Follow the process and output requirements.
+"""
+
+
+def build_synthesizer_prompt(
+    goal: str,
+    pool: str,
+    task_summaries: list[dict],
+    kb_content: str = "",
+) -> str:
+    """Build the synthesizer prompt with KB context and recent task data.
+
+    Args:
+        goal: Content of goal.md
+        pool: Content of pool.md (for Hard Constraints etc.)
+        task_summaries: List of dicts with task_id, status, execution_log, findings
+        kb_content: Current synthesis_kb.md content (empty on first run)
+    """
+    # Only pass recent tasks in detail — older ones are already in KB
+    recent_tasks = task_summaries[-5:]
+    older_count = len(task_summaries) - len(recent_tasks)
+
+    task_data = ""
+    for t in recent_tasks:
+        task_data += f"\n### {t['task_id']} (status: {t['status']})\n"
+        if t.get("execution_log"):
+            task_data += f"**Execution Log:**\n{t['execution_log'][:2000]}\n"
+        if t.get("findings"):
+            task_data += f"**Findings:**\n{t['findings'][:1000]}\n"
+
+    # Extract hard constraints from pool (important context)
+    hard_constraints = _extract_hard_constraints(pool)
+    hc_section = ""
+    if hard_constraints:
+        hc_section = f"""
+Hard Constraints (已证实，不可违反):
+---
+{hard_constraints}
+---
+"""
+
+    return f"""Goal:
+---
+{goal}
+---
+{hc_section}
+Current Knowledge Base (your previous analysis):
+---
+{kb_content}
+---
+
+NEW completed tasks since last synthesis ({len(recent_tasks)} new, {older_count} older already in KB):
+---
+{task_data}
+---
+
+Update the Knowledge Base. Output the COMPLETE updated synthesis_kb.md.
+Follow the convergence rules and output format in your system prompt.
 """
 
 
