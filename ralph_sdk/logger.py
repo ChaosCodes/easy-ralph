@@ -205,6 +205,59 @@ class StreamResult:
     thinking_text: str = ""
 
 
+async def _watchdog(
+    agent_name: str,
+    last_activity: list[float],
+    start_time: float,
+    idle_warn_seconds: int,
+    heartbeat_seconds: int,
+) -> None:
+    """Background coroutine that monitors stream liveness.
+
+    Periodically checks ``last_activity`` (a mutable single-element list
+    updated by the main stream loop) and prints warnings / heartbeats.
+    """
+    loop_time = asyncio.get_event_loop().time
+    while True:
+        await asyncio.sleep(min(heartbeat_seconds, 60))
+        now = loop_time()
+        idle = now - last_activity[0]
+        elapsed = now - start_time
+
+        # Idle warning
+        if idle_warn_seconds and idle >= idle_warn_seconds:
+            _console.print(
+                f"[yellow]⚠ IDLE WARNING: {agent_name} idle "
+                f"{format_duration(idle)}[/yellow]"
+            )
+
+        # Periodic heartbeat
+        if heartbeat_seconds and elapsed >= heartbeat_seconds:
+            _console.print(
+                f"[dim]♥ {agent_name}: {format_duration(elapsed)} elapsed, "
+                f"last activity {format_duration(idle)} ago[/dim]"
+            )
+
+
+def _is_transient_api_error(
+    exc: BaseException | None = None,
+    result_text: str = "",
+    result_stats: object | None = None,
+) -> bool:
+    """Detect transient API errors (529 overloaded, 429 rate limit, 503 service unavailable)."""
+    patterns = ["overloaded", "529", "rate_limit", "429", "503", "service unavailable"]
+    if exc and any(p in str(exc).lower() for p in patterns):
+        return True
+    if result_text and any(p in result_text.lower() for p in patterns):
+        return True
+    # ResultMessage.is_error with zero tokens → API never processed the request
+    if result_stats and getattr(result_stats, "is_error", False):
+        usage = getattr(result_stats, "usage", None) or {}
+        if usage.get("input_tokens", 0) == 0 and usage.get("output_tokens", 0) == 0:
+            return True
+    return False
+
+
 async def stream_query(
     prompt: str,
     options: ClaudeAgentOptions,
@@ -216,8 +269,15 @@ async def stream_query(
     show_tools: bool | None = None,
     status_message: str | None = None,
     include_partial: bool = False,
+    idle_warn_seconds: int = 900,
+    heartbeat_seconds: int = 300,
+    max_retries: int = 3,
+    retry_base_delay: float = 30.0,
 ) -> StreamResult:
     """Run a streaming query and handle output uniformly.
+
+    Includes automatic retry with exponential backoff for transient API errors
+    (529 overloaded, 429 rate limit, etc.).
 
     Args:
         prompt: The prompt to send.
@@ -230,6 +290,8 @@ async def stream_query(
         status_message: If provided, printed as dim text before starting.
         include_partial: If True, enable partial message streaming and display
             real-time text tokens when verbose is also True.
+        max_retries: Maximum number of retries for transient API errors.
+        retry_base_delay: Base delay in seconds for exponential backoff (30 → 60 → 120).
 
     Returns:
         StreamResult with accumulated text, tool count, and result stats.
@@ -242,115 +304,196 @@ async def stream_query(
 
     _should_show = show_tools if show_tools is not None else True
 
-    result_text = ""
-    thinking_text = ""
-    tool_count = 0
-    result_stats = None
-    structured_output = None
+    last_exception: BaseException | None = None
 
-    # Store generator reference so we can explicitly close it in finally.
-    # Without this, GC'd generators fire aclose() in the wrong task context,
-    # causing anyio cancel scope CancelledError in the main orchestrator.
-    query_gen = query(prompt=prompt, options=options)
-    try:
-        async for message in query_gen:
-            if isinstance(message, StreamEvent):
-                # Real-time display of partial content
-                if verbose and include_partial:
-                    event = message.event
-                    if event.get("type") == "content_block_delta":
-                        delta = event.get("delta", {})
-                        if delta.get("type") == "text_delta":
-                            _console.print(delta["text"], end="")
-                        elif delta.get("type") == "thinking_delta":
-                            _console.print(f"[dim magenta]{delta['thinking']}[/dim magenta]", end="")
-            elif isinstance(message, AssistantMessage):
-                text_blocks = []
-                thinking_blocks = []
-                tool_blocks = []
-                for block in message.content:
-                    if isinstance(block, ThinkingBlock):
-                        thinking_blocks.append(block.thinking)
-                    elif hasattr(block, "text") and block.text:
-                        result_text += block.text
-                        text_blocks.append(block.text)
-                    if hasattr(block, "name") and hasattr(block, "input"):
-                        tool_blocks.append(block)
+    for attempt in range(max_retries + 1):
+        # Reset accumulators on each attempt
+        result_text = ""
+        thinking_text = ""
+        tool_count = 0
+        result_stats = None
+        structured_output = None
 
-                # Accumulate thinking text
-                if thinking_blocks:
-                    thinking_text += "\n".join(thinking_blocks)
+        # Store generator reference so we can explicitly close it in finally.
+        # Without this, GC'd generators fire aclose() in the wrong task context,
+        # causing anyio cancel scope CancelledError in the main orchestrator.
+        query_gen = query(prompt=prompt, options=options)
 
-                # Print thinking blocks (verbose only)
-                if verbose and thinking_blocks:
-                    for t in thinking_blocks:
-                        _console.print(Panel(
-                            f"[dim magenta]{t}[/dim magenta]",
-                            title=f"[dim magenta]{emoji} Thinking[/dim magenta]",
-                            border_style="dim magenta",
-                            expand=False,
-                        ))
+        # Start watchdog for idle/heartbeat monitoring
+        loop_time = asyncio.get_event_loop().time
+        last_activity: list[float] = [loop_time()]
+        watchdog_task = (
+            asyncio.create_task(
+                _watchdog(agent_name, last_activity, last_activity[0],
+                          idle_warn_seconds, heartbeat_seconds)
+            )
+            if (idle_warn_seconds or heartbeat_seconds) else None
+        )
 
-                # Print assistant text (full, dimmed)
-                if verbose and not include_partial and text_blocks:
-                    full_text = "\n".join(t.strip() for t in text_blocks if t.strip())
-                    if full_text:
-                        _console.print(f"     [italic dim]{emoji} {full_text}[/italic dim]")
+        try:
+            async for message in query_gen:
+                last_activity[0] = loop_time()  # update on every message
+                if isinstance(message, StreamEvent):
+                    # Real-time display of partial content
+                    if verbose and include_partial:
+                        event = message.event
+                        if event.get("type") == "content_block_delta":
+                            delta = event.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                _console.print(delta["text"], end="")
+                            elif delta.get("type") == "thinking_delta":
+                                _console.print(f"[dim magenta]{delta['thinking']}[/dim magenta]", end="")
+                elif isinstance(message, AssistantMessage):
+                    text_blocks = []
+                    thinking_blocks = []
+                    tool_blocks = []
+                    for block in message.content:
+                        if isinstance(block, ThinkingBlock):
+                            thinking_blocks.append(block.thinking)
+                        elif hasattr(block, "text") and block.text:
+                            result_text += block.text
+                            text_blocks.append(block.text)
+                        if hasattr(block, "name") and hasattr(block, "input"):
+                            tool_blocks.append(block)
 
-                # Print tool calls with parallel grouping
-                for i, block in enumerate(tool_blocks):
-                    tool_count += 1
-                    log_tool_call(cwd, agent_name, block.name, block.input)
+                    # Accumulate thinking text
+                    if thinking_blocks:
+                        thinking_text += "\n".join(thinking_blocks)
 
-                    # Capture StructuredOutput tool input as fallback
-                    # (ResultMessage.structured_output can be None even when the model called the tool)
-                    if block.name == "StructuredOutput" and block.input:
-                        structured_output = block.input
+                    # Print thinking blocks (verbose only)
+                    if verbose and thinking_blocks:
+                        for t in thinking_blocks:
+                            _console.print(Panel(
+                                f"[dim magenta]{t}[/dim magenta]",
+                                title=f"[dim magenta]{emoji} Thinking[/dim magenta]",
+                                border_style="dim magenta",
+                                expand=False,
+                            ))
 
-                    if _should_show:
-                        tool_line = format_tool_line(block.name, block.input, cwd)
-                        if tool_line:
-                            if len(tool_blocks) > 1:
-                                if i == 0:
-                                    prefix = "[dim]┌[/dim]"
-                                elif i == len(tool_blocks) - 1:
-                                    prefix = "[dim]└[/dim]"
+                    # Print assistant text (full, dimmed)
+                    if verbose and not include_partial and text_blocks:
+                        full_text = "\n".join(t.strip() for t in text_blocks if t.strip())
+                        if full_text:
+                            _console.print(f"     [italic dim]{emoji} {full_text}[/italic dim]")
+
+                    # Print tool calls with parallel grouping
+                    for i, block in enumerate(tool_blocks):
+                        tool_count += 1
+                        log_tool_call(cwd, agent_name, block.name, block.input)
+
+                        # Capture StructuredOutput tool input as fallback
+                        # (ResultMessage.structured_output can be None even when the model called the tool)
+                        if block.name == "StructuredOutput" and block.input:
+                            structured_output = block.input
+
+                        if _should_show:
+                            tool_line = format_tool_line(block.name, block.input, cwd)
+                            if tool_line:
+                                if len(tool_blocks) > 1:
+                                    if i == 0:
+                                        prefix = "[dim]┌[/dim]"
+                                    elif i == len(tool_blocks) - 1:
+                                        prefix = "[dim]└[/dim]"
+                                    else:
+                                        prefix = "[dim]│[/dim]"
+                                    _console.print(f"  {prefix} [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
                                 else:
-                                    prefix = "[dim]│[/dim]"
-                                _console.print(f"  {prefix} [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
-                            else:
-                                _console.print(f"    [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
-            elif isinstance(message, ResultMessage):
-                result_stats = message
-                if hasattr(message, 'structured_output') and message.structured_output:
-                    structured_output = message.structured_output
-    except (BaseExceptionGroup, ExceptionGroup) as eg:
-        # SDK cleanup race: MCP handler writes to closed transport
-        cli_errors, rest = eg.split(CLIConnectionError)
-        if rest:
-            raise rest  # Re-raise non-CLI errors
-        # CLI connection errors during cleanup — check if we have results
-        if result_stats:
-            _console.print(f"[dim]⚠ Benign MCP cleanup error (results already collected)[/dim]")
-        else:
-            raise RuntimeError(
-                f"Claude CLI process exited during MCP initialization. "
-                f"This is usually transient — retry may succeed. "
-                f"Details: {cli_errors}"
-            ) from cli_errors
-    except (RuntimeError, asyncio.CancelledError) as e:
-        # anyio cancel scope cleanup in wrong task context (parallel execution)
-        if "cancel scope" in str(e).lower() and result_stats:
-            _console.print(f"[dim]⚠ Benign SDK cleanup error (results already collected)[/dim]")
-        else:
+                                    _console.print(f"    [bright_black][{tool_count:2d}][/bright_black] {tool_line}")
+                elif isinstance(message, ResultMessage):
+                    result_stats = message
+                    if hasattr(message, 'structured_output') and message.structured_output:
+                        structured_output = message.structured_output
+        except (BaseExceptionGroup, ExceptionGroup) as eg:
+            # SDK cleanup race: MCP handler writes to closed transport
+            cli_errors, rest = eg.split(CLIConnectionError)
+            if rest:
+                raise rest  # Re-raise non-CLI errors
+            # CLI connection errors during cleanup — check if we have results
+            if result_stats:
+                _console.print(f"[dim]⚠ Benign MCP cleanup error (results already collected)[/dim]")
+            else:
+                # Check if this is a transient API error before raising
+                if _is_transient_api_error(exc=cli_errors) and attempt < max_retries:
+                    last_exception = cli_errors
+                    delay = retry_base_delay * (2 ** attempt)
+                    _console.print(
+                        f"[yellow]⚠ {agent_name}: transient API error (attempt {attempt + 1}/{max_retries + 1}), "
+                        f"retrying in {delay:.0f}s...[/yellow]\n"
+                        f"[dim]  Error: {cli_errors}[/dim]"
+                    )
+                    # Cleanup before retry
+                    if watchdog_task:
+                        watchdog_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await watchdog_task
+                    with contextlib.suppress(RuntimeError, GeneratorExit, BaseExceptionGroup, asyncio.CancelledError):
+                        await query_gen.aclose()
+                    await asyncio.sleep(delay)
+                    continue
+                raise RuntimeError(
+                    f"Claude CLI process exited during MCP initialization. "
+                    f"This is usually transient — retry may succeed. "
+                    f"Details: {cli_errors}"
+                ) from cli_errors
+        except (RuntimeError, asyncio.CancelledError) as e:
+            # anyio cancel scope cleanup in wrong task context (parallel execution)
+            if "cancel scope" in str(e).lower() and result_stats:
+                _console.print(f"[dim]⚠ Benign SDK cleanup error (results already collected)[/dim]")
+            else:
+                raise
+        except Exception as e:
+            # Scenario A: Exception during iteration (e.g. "Command failed with exit code 1")
+            if _is_transient_api_error(exc=e) and attempt < max_retries:
+                last_exception = e
+                delay = retry_base_delay * (2 ** attempt)
+                _console.print(
+                    f"[yellow]⚠ {agent_name}: transient API error (attempt {attempt + 1}/{max_retries + 1}), "
+                    f"retrying in {delay:.0f}s...[/yellow]\n"
+                    f"[dim]  Error: {e}[/dim]"
+                )
+                # Cleanup before retry
+                if watchdog_task:
+                    watchdog_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await watchdog_task
+                with contextlib.suppress(RuntimeError, GeneratorExit, BaseExceptionGroup, asyncio.CancelledError):
+                    await query_gen.aclose()
+                await asyncio.sleep(delay)
+                continue
             raise
-    finally:
-        # Explicitly close generator in SAME task context to prevent
-        # cross-task cancel scope error during parallel execution.
-        # Suppress errors from cleanup — the generator may already be closed,
-        # or anyio's cancel scope may fire during aclose().
-        with contextlib.suppress(RuntimeError, GeneratorExit, BaseExceptionGroup, asyncio.CancelledError):
-            await query_gen.aclose()
+        finally:
+            # Cancel watchdog before closing generator
+            if watchdog_task:
+                watchdog_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watchdog_task
+
+            # Explicitly close generator in SAME task context to prevent
+            # cross-task cancel scope error during parallel execution.
+            # Suppress errors from cleanup — the generator may already be closed,
+            # or anyio's cancel scope may fire during aclose().
+            with contextlib.suppress(RuntimeError, GeneratorExit, BaseExceptionGroup, asyncio.CancelledError):
+                await query_gen.aclose()
+
+        # Scenario B: ResultMessage returned but is_error with transient error
+        if _is_transient_api_error(result_text=result_text, result_stats=result_stats):
+            if attempt < max_retries:
+                delay = retry_base_delay * (2 ** attempt)
+                _console.print(
+                    f"[yellow]⚠ {agent_name}: transient API error in response (attempt {attempt + 1}/{max_retries + 1}), "
+                    f"retrying in {delay:.0f}s...[/yellow]\n"
+                    f"[dim]  Response: {result_text[:200]}[/dim]"
+                )
+                await asyncio.sleep(delay)
+                continue
+            # Retries exhausted — fall through and return the error result
+
+        # Success or non-transient error — break out of retry loop
+        if attempt > 0:
+            _console.print(
+                f"[green]✓ {agent_name}: recovered after {attempt} retry(ies)[/green]"
+            )
+        break
 
     return StreamResult(text=result_text, tool_count=tool_count, result_stats=result_stats, structured_output=structured_output, thinking_text=thinking_text)
 
@@ -605,28 +748,6 @@ class SessionLogger:
             "success": success,
             "tool_calls": tool_calls,
             "error": error,
-        })
-        self._save_metrics()
-
-    def log_reviewer_verdict(
-        self,
-        task_id: str,
-        verdict: str,
-        reason: str,
-        tool_calls: int = 0,
-    ) -> None:
-        """Log reviewer verdict."""
-        self.metrics.total_tool_calls += tool_calls
-
-        if verdict == "passed":
-            self.metrics.tasks_completed += 1
-
-        self._write_event({
-            "event": "reviewer_verdict",
-            "task_id": task_id,
-            "verdict": verdict,
-            "reason": reason[:200],
-            "tool_calls": tool_calls,
         })
         self._save_metrics()
 
